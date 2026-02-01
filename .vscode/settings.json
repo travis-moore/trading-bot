@@ -1,0 +1,111 @@
+{
+    // VS Code Settings for Trading API Test Suite
+    // Place this file in .vscode/settings.json in your project root
+    
+    // ========================================================================
+    // PYTHON CONFIGURATION
+    // ========================================================================
+    "python.defaultInterpreterPath": "${workspaceFolder}/venv/bin/python",
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestEnabled": false,
+    
+    // ========================================================================
+    // DEBUGGING CONFIGURATION
+    // ========================================================================
+    "debug.console.fontSize": 14,
+    "debug.console.lineHeight": 20,
+    "debug.console.wordWrap": true,
+    "debug.inlineValues": true,
+    "debug.showBreakpointsInOverviewRuler": true,
+    "debug.toolBarLocation": "docked",
+    
+    // ========================================================================
+    // PYTHON DEBUGGING
+    // ========================================================================
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.diagnosticMode": "workspace",
+    "python.analysis.autoImportCompletions": true,
+    "python.languageServer": "Pylance",
+    
+    // ========================================================================
+    // CODE FORMATTING
+    // ========================================================================
+    "editor.formatOnSave": true,
+    "python.formatting.provider": "black",
+    "python.formatting.blackArgs": [
+        "--line-length=100"
+    ],
+    
+    // ========================================================================
+    // LINTING
+    // ========================================================================
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": false,
+    "python.linting.flake8Enabled": true,
+    "python.linting.flake8Args": [
+        "--max-line-length=100",
+        "--ignore=E203,E266,E501,W503"
+    ],
+    
+    // ========================================================================
+    // TERMINAL CONFIGURATION
+    // ========================================================================
+    "terminal.integrated.defaultProfile.linux": "bash",
+    "terminal.integrated.fontSize": 14,
+    "terminal.integrated.scrollback": 10000,
+    
+    // ========================================================================
+    // FILE ASSOCIATIONS
+    // ========================================================================
+    "files.associations": {
+        "*.py": "python",
+        "launch.json": "jsonc",
+        "settings.json": "jsonc"
+    },
+    
+    // ========================================================================
+    // AUTO SAVE
+    // ========================================================================
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 1000,
+    
+    // ========================================================================
+    // EDITOR CONFIGURATION
+    // ========================================================================
+    "editor.rulers": [80, 100],
+    "editor.wordWrap": "on",
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": true,
+    "editor.renderWhitespace": "boundary",
+    "editor.bracketPairColorization.enabled": true,
+    "editor.guides.bracketPairs": true,
+    
+    // ========================================================================
+    // BREAKPOINT CONFIGURATION
+    // ========================================================================
+    "debug.javascript.breakOnConditionalError": true,
+    "debug.allowBreakpointsEverywhere": true,
+    
+    // ========================================================================
+    // OUTPUT CONFIGURATION
+    // ========================================================================
+    "output.smartScroll.enabled": true,
+    
+    // ========================================================================
+    // WORKSPACE SPECIFIC
+    // ========================================================================
+    "python.envFile": "${workspaceFolder}/.env",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}"
+    ],
+    
+    // ========================================================================
+    // RECOMMENDED EXTENSIONS (optional)
+    // ========================================================================
+    "recommendations": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy"
+    ]
+}

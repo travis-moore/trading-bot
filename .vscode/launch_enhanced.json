@@ -1,0 +1,339 @@
+{
+    // VS Code Launch Configuration for Trading API Test Suite
+    // Place this file in .vscode/launch.json in your project root
+    "version": "0.2.0",
+    "configurations": [
+        // ====================================================================
+        // MAIN TEST CONFIGURATIONS
+        // ====================================================================
+        {
+            "name": "🚀 Run All Tests (Automated)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "presentation": {
+                "group": "1-main",
+                "order": 1
+            }
+        },
+        {
+            "name": "🎮 Interactive Test Mode",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": ["--interactive"],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "presentation": {
+                "group": "1-main",
+                "order": 2
+            }
+        },
+        
+        // ====================================================================
+        // CATEGORY-SPECIFIC DEBUG CONFIGURATIONS
+        // ====================================================================
+        {
+            "name": "🐛 Debug: Stock Price Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${workspaceFolder}/test_trading_api.py",
+                "-k", "stock_price",
+                "-v",
+                "-s"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "presentation": {
+                "group": "2-debug",
+                "order": 1
+            }
+        },
+        {
+            "name": "🐛 Debug: Market Depth Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${workspaceFolder}/test_trading_api.py",
+                "-k", "market_depth",
+                "-v",
+                "-s"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "2-debug",
+                "order": 2
+            }
+        },
+        {
+            "name": "🐛 Debug: Options Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${workspaceFolder}/test_trading_api.py",
+                "-k", "option",
+                "-v",
+                "-s"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "2-debug",
+                "order": 3
+            }
+        },
+        {
+            "name": "🐛 Debug: Order Management Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${workspaceFolder}/test_trading_api.py",
+                "-k", "order",
+                "-v",
+                "-s"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "2-debug",
+                "order": 4
+            }
+        },
+        {
+            "name": "🐛 Debug: Account Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${workspaceFolder}/test_trading_api.py",
+                "-k", "account or position",
+                "-v",
+                "-s"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "2-debug",
+                "order": 5
+            }
+        },
+        {
+            "name": "🐛 Debug: Streaming Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${workspaceFolder}/test_trading_api.py",
+                "-k", "stream",
+                "-v",
+                "-s"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "2-debug",
+                "order": 6
+            }
+        },
+        
+        // ====================================================================
+        // ADVANCED DEBUG CONFIGURATIONS
+        // ====================================================================
+        {
+            "name": "🔍 Debug with Breakpoints (Step Through)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "stopOnEntry": false,
+            "args": [],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "DEBUG": "1"
+            },
+            "presentation": {
+                "group": "3-advanced",
+                "order": 1
+            }
+        },
+        {
+            "name": "🔍 Debug Current Python File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "presentation": {
+                "group": "3-advanced",
+                "order": 2
+            }
+        },
+        {
+            "name": "🔍 Debug with External API (Real Data)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "API_MODE": "live",
+                "API_KEY": "${input:apiKey}",
+                "API_SECRET": "${input:apiSecret}"
+            },
+            "presentation": {
+                "group": "3-advanced",
+                "order": 3
+            }
+        },
+        
+        // ====================================================================
+        // SPECIALIZED CONFIGURATIONS
+        // ====================================================================
+        {
+            "name": "🧪 Debug Failed Tests Only",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${workspaceFolder}/test_trading_api.py",
+                "--lf",  // Last failed
+                "-v",
+                "-s"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "4-special",
+                "order": 1
+            }
+        },
+        {
+            "name": "🧪 Debug Single Test Function",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${workspaceFolder}/test_trading_api.py::TradingAPITester::${input:testMethod}",
+                "-v",
+                "-s"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "presentation": {
+                "group": "4-special",
+                "order": 2
+            }
+        },
+        {
+            "name": "🧪 Debug with Verbose Output",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PYTHONUNBUFFERED": "1",
+                "VERBOSE": "1"
+            },
+            "presentation": {
+                "group": "4-special",
+                "order": 3
+            }
+        },
+        
+        // ====================================================================
+        // ATTACH CONFIGURATIONS (for remote debugging)
+        // ====================================================================
+        {
+            "name": "🔌 Attach to Running Process",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}",
+                    "remoteRoot": "."
+                }
+            ],
+            "presentation": {
+                "group": "5-attach",
+                "order": 1
+            }
+        }
+    ],
+    
+    // ========================================================================
+    // INPUT VARIABLES (for interactive configurations)
+    // ========================================================================
+    "inputs": [
+        {
+            "id": "testMethod",
+            "type": "pickString",
+            "description": "Select test method to debug",
+            "options": [
+                "test_get_stock_price_basic",
+                "test_get_stock_price_invalid_symbol",
+                "test_subscribe_market_depth",
+                "test_cancel_market_depth",
+                "test_get_option_chain_basic",
+                "test_get_option_chain_with_expiration",
+                "test_find_option_contract",
+                "test_place_market_order",
+                "test_place_limit_order",
+                "test_cancel_order",
+                "test_get_order_status",
+                "test_get_account_balance",
+                "test_get_positions",
+                "test_get_historical_data",
+                "test_get_market_hours",
+                "test_get_quote",
+                "test_stream_quotes",
+                "test_cancel_stream",
+                "test_get_watchlist",
+                "test_add_to_watchlist",
+                "test_remove_from_watchlist",
+                "test_multiple_simultaneous_subscriptions",
+                "test_order_lifecycle"
+            ],
+            "default": "test_get_stock_price_basic"
+        },
+        {
+            "id": "apiKey",
+            "type": "promptString",
+            "description": "Enter your API Key",
+            "password": false
+        },
+        {
+            "id": "apiSecret",
+            "type": "promptString",
+            "description": "Enter your API Secret",
+            "password": true
+        }
+    ]
+}

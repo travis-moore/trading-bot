@@ -1,0 +1,84 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Run All Tests",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": []
+        },
+        {
+            "name": "Python: Interactive Test Mode",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": ["--interactive"]
+        },
+        {
+            "name": "Python: Debug Single Test - Stock Price",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "stopOnEntry": false
+        },
+        {
+            "name": "Python: Debug Single Test - Market Depth",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": []
+        },
+        {
+            "name": "Python: Debug Single Test - Options",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": []
+        },
+        {
+            "name": "Python: Debug Single Test - Orders",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": []
+        },
+        {
+            "name": "Python: Debug Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: Debug with Arguments (Custom)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_trading_api.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "DEBUG_MODE": "1"
+            }
+        }
+    ]
+}

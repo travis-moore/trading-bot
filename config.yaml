@@ -1,0 +1,58 @@
+# Swing Trading Bot Configuration
+
+# Interactive Brokers Connection
+ib_connection:
+  host: "127.0.0.1"
+  port: 7497  # TWS live=7497, paper=7497, Gateway live=7497, paper=4002
+  client_id: 1
+
+# Trading symbols to monitor
+symbols:
+  - "NVDA"
+  - "AAPL"
+  - "TSLA"
+  # Add more symbols as needed
+
+# Liquidity Analyzer Settings
+liquidity_analysis:
+  liquidity_threshold: 1000      # Minimum order size to consider a zone
+  zone_proximity: 0.10           # Distance from zone to trigger (dollars)
+  imbalance_threshold: 0.6       # Order imbalance threshold (0-1)
+  num_levels: 10                 # Number of order book levels to analyze
+
+# Trading Rules - Pattern confidence thresholds
+trading_rules:
+  rejection_support_confidence: 0.65    # Bounce off support
+  breakout_up_confidence: 0.70          # Strong buying pressure
+  rejection_resistance_confidence: 0.65  # Rejection at resistance
+  breakout_down_confidence: 0.70        # Strong selling pressure
+
+# Risk Management
+risk_management:
+  max_position_size: 2000        # Maximum dollar amount per position
+  max_positions: 3               # Maximum concurrent positions
+  position_size_pct: 0.02        # Position size as % of account (2%)
+  profit_target_pct: 0.50        # Take profit at 50% gain
+  stop_loss_pct: 0.30            # Stop loss at 30% loss
+  max_hold_days: 30              # Maximum days to hold position
+
+# Option Selection
+option_selection:
+  min_dte: 14                    # Minimum days to expiration
+  max_dte: 45                    # Maximum days to expiration
+  call_strike_pct: 1.02          # Call strike: 2% OTM
+  put_strike_pct: 0.98           # Put strike: 2% OTM
+
+# Bot Operation
+operation:
+  scan_interval: 60              # Seconds between scans
+  market_data_refresh: 5         # Seconds between depth data updates
+  enable_paper_trading: true     # Use paper trading account
+  log_level: "INFO"              # DEBUG, INFO, WARNING, ERROR
+
+# Safety Features
+safety:
+  require_manual_approval: false  # Require approval before trades
+  max_daily_loss: 500            # Max loss per day (dollars)
+  trading_hours_only: true       # Only trade during market hours
+  emergency_stop: false          # Emergency stop all trading
