@@ -208,16 +208,9 @@ class TradingEngine:
             logger.error(f"No strikes available in chain for {symbol}")
             return None
         
-        # Filter to strikes that are multiples of 5 (most liquid)
-        # For high-priced stocks like AAPL, these are the standard strikes
-        standard_strikes = [s for s in chain.strikes if s % 5 == 0]
-        
-        # If we have standard strikes, prioritize those
-        if standard_strikes:
-            sorted_strikes = sorted(standard_strikes, key=lambda x: abs(x - target_strike))
-        else:
-            # Fall back to all strikes if no standard strikes found
-            sorted_strikes = sorted(chain.strikes, key=lambda x: abs(x - target_strike))
+        # Sort all available strikes by proximity to target
+        # The chain already contains only valid strikes for this symbol
+        sorted_strikes = sorted(chain.strikes, key=lambda x: abs(x - target_strike))
         
         # Try up to 10 closest strikes (increased from 5)
         max_attempts = min(10, len(sorted_strikes))
