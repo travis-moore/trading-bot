@@ -35,7 +35,7 @@
   - Price retrieved: $258.28
   - Notes: ___________
 
-- [ ] `subscribe_market_depth()` - Gets order book data
+- [x] `subscribe_market_depth()` - Gets order book data
   ```python
   ticker = ib.subscribe_market_depth('APPL', num_rows=10)
   import time
@@ -43,18 +43,18 @@
   print(f"Bids: {len(ticker.domBids)}")
   print(f"Asks: {len(ticker.domAsks)}")
   ```
-  - Works: Yes/No
-  - Depth data received: Yes/No
-  - Number of bid levels: ___________
-  - Number of ask levels: ___________
+  - Works: Yes
+  - Depth data received: Yes
+  - Number of bid levels: 30
+  - Number of ask levels: 30
   - Notes: ___________
   - **If fails:** Check if you have market data subscription
 
-- [ ] `cancel_market_depth()` - Unsubscribes from depth
+- [x] `cancel_market_depth()` - Unsubscribes from depth
   ```python
   ib.cancel_market_depth(ticker.contract)
   ```
-  - Works: Yes/No
+  - Works: Yes
   - Notes: ___________
 
 ### Option Chain Functions
@@ -81,18 +81,18 @@
   - Symbol: AAPL  260209C00262500
   - Notes: ___________
 
-- [ ] `get_option_price()` - Gets option pricing
+- [x] `get_option_price()` - Gets option pricing
   ```python
   # Using contract from previous test
   if contract:
       bid, ask, last = ib.get_option_price(contract)
       print(f"Bid: ${bid}, Ask: ${ask}, Last: ${last}")
   ```
-  - Works: Yes/No
-  - Bid: $___________
-  - Ask: $___________
-  - Last: $___________
-  - Notes: Need to wait until market is open
+  - Works: Yes
+  - Bid: $1.97
+  - Ask: $2.01
+  - Last: $1.88
+  - Notes:
 
 ### Account Functions
 - [x] `get_account_value()` - Returns account balance
@@ -128,17 +128,17 @@
 ### Trading Functions (TEST IN PAPER ONLY!)
 ⚠️ **CRITICAL: Ensure you're connected to paper trading before testing these!**
 
-- [ ] **VERIFY PAPER TRADING FIRST**
+- [x] **VERIFY PAPER TRADING FIRST**
   ```python
   account_value = ib.get_account_value()
   print(f"Account value: ${account_value:,.2f}")
   # Paper accounts typically show ~$1,000,000
   # If this shows your real balance, STOP!
   ```
-  - Account value indicates paper: Yes/No
-  - Safe to proceed: Yes/No
+  - Account value indicates paper: Yes
+  - Safe to proceed: Yes
 
-- [ ] `buy_option()` - Places buy order
+- [x] `buy_option()` - Places buy order
   ```python
   # Find a cheap option first
   contract = ib.find_option_contract('AAPL', 180.0, '20250221', 'C')
@@ -149,40 +149,40 @@
       trade = ib.buy_option(contract, quantity=1, limit_price=mid_price)
       print(f"Order placed: {trade is not None}")
   ```
-  - Works: Yes/No
-  - Order placed: Yes/No
-  - Order status: ___________
+  - Works: Yes
+  - Order placed: Yes
+  - Order status: Submitted
   - Notes: ___________
 
-- [ ] `sell_option()` - Places sell order
+- [x] `sell_option()` - Places sell order
   ```python
   # Sell the option we just bought
   if contract and trade:
       trade = ib.sell_option(contract, quantity=1, limit_price=mid_price)
       print(f"Sell order placed: {trade is not None}")
   ```
-  - Works: Yes/No
-  - Order placed: Yes/No
-  - Order status: ___________
+  - Works: Yes
+  - Order placed: Yes
+  - Order status: Submitted
   - Notes: ___________
 
-- [ ] `cancel_all_orders()` - Cancels open orders
+- [x] `cancel_sell_order()` - Cancels last sell order
   ```python
-  ib.cancel_all_orders()
+  ib.cancel_sell_order()
   ```
-  - Works: Yes/No
+  - Works: Yes
   - Notes: ___________
 
 ## Phase 3: Liquidity Analyzer (liquidity_analyzer.py)
 
-- [ ] **Test with mock data** (no IB connection needed)
+- [x] **Test with mock data** (no IB connection needed)
   ```python
   python test_bot.py
   ```
-  - All tests pass: Yes/No
+  - All tests pass: Yes
   - Notes: ___________
 
-- [ ] **Test with real market depth data**
+- [x] **Test with real market depth data**
   ```python
   from ib_wrapper import IBWrapper
   from liquidity_analyzer import LiquidityAnalyzer
@@ -208,10 +208,10 @@
   print(f"Resistance zones: {len(analysis['resistance'])}")
   print(f"Imbalance: {analysis['imbalance']:.2%}")
   ```
-  - Works: Yes/No
-  - Support zones found: ___________
-  - Resistance zones found: ___________
-  - Imbalance: ___________%
+  - Works: Yes
+  - Support zones found: 3
+  - Resistance zones found: 6
+  - Imbalance: -16.31%
   - Notes: ___________
 
 - [ ] **Pattern detection**
@@ -221,14 +221,14 @@
   print(f"Pattern: {signal.pattern.value}")
   print(f"Confidence: {signal.confidence:.2%}")
   ```
-  - Works: Yes/No
-  - Pattern detected: ___________
-  - Confidence: ___________%
+  - Works: Yes
+  - Pattern detected: consolidation
+  - Confidence: 50.00%
   - Notes: ___________
 
 ## Phase 4: Trading Engine (trading_engine.py)
 
-- [ ] **Initialize engine**
+- [x] **Initialize engine**
   ```python
   from trading_engine import TradingEngine
   
@@ -252,7 +252,7 @@
   engine = TradingEngine(ib, analyzer, engine_config)
   print("Engine initialized")
   ```
-  - Works: Yes/No
+  - Works: Yes
   - Notes: ___________
 
 - [ ] **Signal evaluation**
@@ -264,20 +264,20 @@
   - Direction recommended: ___________
   - Notes: ___________
 
-- [ ] **Position sizing calculation**
+- [x] **Position sizing calculation**
   ```python
   test_option_price = 2.50
   quantity = engine.calculate_position_size(test_option_price)
   print(f"Position size: {quantity} contracts")
   print(f"Total cost: ${quantity * test_option_price * 100:.2f}")
   ```
-  - Works: Yes/No
-  - Calculated quantity: ___________
-  - Total cost: $___________
+  - Works: Yes
+  - Calculated quantity: 2
+  - Total cost: $500
   - Reasonable for account size: Yes/No
   - Notes: ___________
 
-- [ ] **Option selection**
+- [x] **Option selection**
   ```python
   from trading_engine import TradeDirection
   price = ib.get_stock_price('APPL')
@@ -285,9 +285,9 @@
   if contract:
       print(f"Selected: {contract.localSymbol}")
   ```
-  - Works: Yes/No
-  - Contract selected: ___________
-  - Strike makes sense: Yes/No
+  - Works: Yes
+  - Contract selected: AAPL  260220C00270000
+  - Strike makes sense: Yes
   - Expiration makes sense: Yes/No
   - Notes: ___________
 
