@@ -2,6 +2,7 @@
 """
 Comprehensive Test Program for Trading Bot Functions
 Tests with proper validation - tests FAIL if data is invalid
+Includes TRADING FUNCTION tests (paper trading only!)
 """
 
 import time
@@ -123,24 +124,31 @@ class TradingAPITester:
     def test_subscribe_market_depth(self):
         """Test subscribing to market depth"""
         symbol = self.test_symbols[0]
-        ticker = self.ib.subscribe_market_depth(symbol, num_rows=10)
-        
+        ticker = self.ib.subscribe_market_depth(symbol, num_rows=50)
+
         if ticker is None:
             raise Exception(f"subscribe_market_depth() returned None")
-        
-        # Wait for data
-        time.sleep(3)
-        
-        has_bids = ticker.domBids and len(ticker.domBids) > 0
-        has_asks = ticker.domAsks and len(ticker.domAsks) > 0
-        
+
+        timeout = 10  # seconds
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            real_bids = [b for b in ticker.domBids if b.price > 0]
+            real_asks = [a for a in ticker.domAsks if a.price > 0]
+            if real_bids and real_asks:
+                break
+            self.ib.ib.sleep(0.5)
+
+        real_bids = [b for b in ticker.domBids if b.price > 0]
+        real_asks = [a for a in ticker.domAsks if a.price > 0]
+
         # Clean up first
         self.ib.cancel_market_depth(ticker.contract)
-        
-        if not has_bids or not has_asks:
+
+        if not real_bids or not real_asks:
             raise SkipTest(f"No depth data - requires market data subscription (Level 2)")
-        
-        print(f"  {len(ticker.domBids)} bid levels, {len(ticker.domAsks)} ask levels")
+
+        print(f"  {len(real_bids)} bid levels, {len(real_asks)} ask levels")
     
     def test_cancel_market_depth(self):
         """Test cancelling market depth subscription"""
@@ -293,6 +301,162 @@ class TradingAPITester:
         print(f"  Portfolio items: {len(portfolio)}")
     
     # ========================================================================
+    # TRADING FUNCTIONS (PAPER TRADING ONLY!)
+    # ========================================================================
+    
+    def test_verify_paper_trading(self):
+        """CRITICAL: Verify we're in paper trading before executing orders"""
+        value = self.ib.get_account_value('NetLiquidation')
+        
+        if value is None:
+            raise Exception("Could not get account value")
+        
+        # Paper accounts typically have ~$1,000,000
+        is_paper = value > 900000
+        
+        if not is_paper:
+            raise Exception(
+                f"⚠️  DANGER: Account value ${value:,.2f} suggests LIVE account! "
+                "Trading tests will NOT run on live accounts."
+            )
+        
+        print(f"  ✓ Paper Trading Confirmed: ${value:,.2f}")
+        print(f"  Safe to proceed with order tests")
+    
+    def test_buy_option(self):
+        """Test placing a buy order (paper trading only)"""
+        # Double-check we're in paper trading
+        value = self.ib.get_account_value('NetLiquidation')
+        if value is None or value < 900000:
+            raise Exception("Not in paper trading - skipping order test")
+        
+        symbol = self.test_symbols[0]
+        
+        # Find a cheap OTM option
+        current_price = self.ib.get_stock_price(symbol)
+        if not current_price:
+            raise Exception("Could not get stock price")
+        
+        chain, expiries = self.ib.get_option_chain(symbol, expiry_days_min=7, expiry_days_max=45)
+        if not expiries or not chain or not chain.strikes:
+            raise Exception("Could not get option chain")
+        
+        # Find strike ~5% OTM (cheaper option)
+        target_strike = current_price * 1.05
+        available_strikes = sorted(chain.strikes)
+        strike = min(available_strikes, key=lambda x: abs(x - target_strike))
+        
+        contract = self.ib.find_option_contract(symbol, strike, expiries[0], 'C')
+        if not contract or not contract.localSymbol:
+            raise Exception("Could not find option contract")
+        
+        # Get price
+        price_data = self.ib.get_option_price(contract)
+        if not price_data:
+            raise Exception("Could not get option price")
+        
+        bid, ask, last = price_data
+        
+        # Check if tradeable
+        if bid == 0 and ask == 0 and last == 0:
+            raise SkipTest("Option has zero price - not tradeable")
+        
+        # Calculate limit price (use mid if available, else last)
+        if bid > 0 and ask > 0:
+            limit_price = round((bid + ask) / 2, 2)
+        else:
+            limit_price = round(last, 2) if last > 0 else 0.10
+        
+        if limit_price <= 0:
+            raise Exception("Could not calculate valid limit price")
+        
+        print(f"  Contract: {contract.localSymbol}")
+        print(f"  Bid: ${bid:.2f}, Ask: ${ask:.2f}, Last: ${last:.2f}")
+        print(f"  Placing BUY order @ ${limit_price:.2f} x 1")
+        
+        # Place order
+        trade = self.ib.buy_option(contract, quantity=1, limit_price=limit_price)
+        
+        if trade is None:
+            raise Exception("buy_option() returned None")
+        
+        # Wait a moment for order to be submitted
+        time.sleep(2)
+        
+        # Check order status
+        print(f"  Order ID: {trade.order.orderId}")
+        print(f"  Status: {trade.orderStatus.status}")
+        
+        # Store for sell test
+        self._test_contract = contract
+        self._test_limit_price = limit_price
+        self._test_trade = trade
+        
+        # Verify order was at least submitted
+        valid_statuses = ['Submitted', 'PreSubmitted', 'Filled', 'PendingSubmit']
+        if trade.orderStatus.status not in valid_statuses:
+            raise Exception(f"Unexpected order status: {trade.orderStatus.status}")
+        
+        print(f"  ✓ Order successfully placed")
+    
+    def test_sell_option(self):
+        """Test placing a sell order (paper trading only)"""
+        # Need successful buy test first
+        if not hasattr(self, '_test_contract'):
+            raise SkipTest("Requires successful buy_option test")
+        
+        contract = self._test_contract
+        limit_price = self._test_limit_price
+        
+        print(f"  Contract: {contract.localSymbol}")
+        print(f"  Placing SELL order @ ${limit_price:.2f} x 1")
+        
+        # Place sell order
+        trade = self.ib.sell_option(contract, quantity=1, limit_price=limit_price)
+        
+        if trade is None:
+            raise Exception("sell_option() returned None")
+        
+        # Wait a moment for order to be submitted
+        time.sleep(2)
+        
+        print(f"  Order ID: {trade.order.orderId}")
+        print(f"  Status: {trade.orderStatus.status}")
+        
+        # Store for cancel test
+        self._sell_trade = trade
+        
+        # Verify order was at least submitted
+        valid_statuses = ['Submitted', 'PreSubmitted', 'Filled', 'PendingSubmit']
+        if trade.orderStatus.status not in valid_statuses:
+            raise Exception(f"Unexpected order status: {trade.orderStatus.status}")
+        
+        print(f"  ✓ Order successfully placed")
+    
+    def test_cancel_sell_order(self):
+        """Test cancelling the sell order placed in the previous test"""
+        if not hasattr(self, '_sell_trade') or self._sell_trade is None:
+            raise Exception("No sell trade to cancel - sell test may have been skipped")
+
+        trade = self._sell_trade
+        order_id = trade.order.orderId
+        print(f"  Cancelling sell order ID: {order_id}")
+
+        self.ib.ib.cancelOrder(trade.order)
+
+        # Wait for cancellation to process
+        time.sleep(2)
+
+        # Check status
+        status = trade.orderStatus.status
+        print(f"  Order status after cancel: {status}")
+
+        if status not in ['Cancelled', 'PendingCancel', 'ApiCancelled']:
+            raise Exception(f"Order not cancelled, status: {status}")
+
+        print(f"  ✓ Sell order {order_id} cancelled")
+    
+    # ========================================================================
     # LIQUIDITY ANALYZER TESTS
     # ========================================================================
     
@@ -300,13 +464,20 @@ class TradingAPITester:
         """Test liquidity analyzer"""
         symbol = self.test_symbols[1]
         
-        # Subscribe to depth
-        ticker = self.ib.subscribe_market_depth(symbol, num_rows=10)
+        # Subscribe to depth and wait for real data
+        ticker = self.ib.subscribe_market_depth(symbol, num_rows=50)
         if not ticker:
             raise Exception("Could not subscribe")
-        
-        time.sleep(3)
-        
+
+        timeout = 10
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            real_bids = [b for b in ticker.domBids if b.price > 0]
+            real_asks = [a for a in ticker.domAsks if a.price > 0]
+            if real_bids and real_asks:
+                break
+            self.ib.ib.sleep(0.5)
+
         # Create analyzer
         config = {
             'liquidity_threshold': 1000,
@@ -316,19 +487,20 @@ class TradingAPITester:
         }
         analyzer = LiquidityAnalyzer(config)
         
+        # Check if we got real depth data (filter out padding from monkey-patch)
+        real_bids = [b for b in ticker.domBids if b.price > 0]
+        real_asks = [a for a in ticker.domAsks if a.price > 0]
+
+        if not real_bids or not real_asks:
+            self.ib.cancel_market_depth(ticker.contract)
+            raise SkipTest("No market depth data - requires Level 2 subscription")
+
         # Analyze
         analysis = analyzer.analyze_book(ticker)
-        
+
         # Clean up
         self.ib.cancel_market_depth(ticker.contract)
-        
-        # Check if we got depth data
-        has_data = (ticker.domBids and len(ticker.domBids) > 0 and
-                   ticker.domAsks and len(ticker.domAsks) > 0)
-        
-        if not has_data:
-            raise SkipTest("No market depth data - requires Level 2 subscription")
-        
+
         print(f"  Support zones: {len(analysis['support'])}")
         print(f"  Resistance zones: {len(analysis['resistance'])}")
         print(f"  Order imbalance: {analysis['imbalance']:.2%}")
@@ -341,12 +513,12 @@ class TradingAPITester:
         if not current_price:
             raise Exception("Could not get price")
         
-        ticker = self.ib.subscribe_market_depth(symbol, num_rows=10)
+        ticker = self.ib.subscribe_market_depth(symbol, num_rows=50)
         if not ticker:
             raise Exception("Could not subscribe")
-        
-        time.sleep(3)
-        
+
+        self.ib.ib.sleep(3)
+
         config = {
             'liquidity_threshold': 1000,
             'zone_proximity': 0.10,
@@ -481,7 +653,7 @@ class TradingAPITester:
     # MASTER TEST RUNNER
     # ========================================================================
     
-    def run_all_tests(self):
+    def run_all_tests(self, include_trading_tests: bool = False):
         """Run all tests"""
         print("=" * 80)
         print("TRADING BOT COMPREHENSIVE TEST SUITE")
@@ -503,8 +675,8 @@ class TradingAPITester:
         
         # Market Depth (can skip if no subscription)
         print("\n--- MARKET DEPTH ---")
-        # self.run_test("subscribe_market_depth", self.test_subscribe_market_depth, can_skip=True)
-        # self.run_test("cancel_market_depth", self.test_cancel_market_depth)
+        self.run_test("subscribe_market_depth", self.test_subscribe_market_depth, can_skip=True)
+        self.run_test("cancel_market_depth", self.test_cancel_market_depth)
         
         # Options
         print("\n--- OPTIONS ---")
@@ -517,6 +689,26 @@ class TradingAPITester:
         self.run_test("get_account_value", self.test_get_account_value)
         self.run_test("get_positions", self.test_get_positions)
         self.run_test("get_portfolio", self.test_get_portfolio)
+        
+        # Trading Functions (PAPER ONLY!)
+        if include_trading_tests:
+            print("\n--- TRADING FUNCTIONS (PAPER TRADING ONLY!) ---")
+            print("⚠️  WARNING: These tests will place actual orders!")
+            print()
+            
+            # CRITICAL: Verify paper trading first
+            self.run_test("⚠️  VERIFY PAPER TRADING", self.test_verify_paper_trading)
+            
+            # Only continue with order tests if paper trading verified
+            if self.test_results[-1]["status"] == "✓ PASS":
+                self.run_test("buy_option", self.test_buy_option, can_skip=True)
+                self.run_test("sell_option", self.test_sell_option, can_skip=True)
+                self.run_test("cancel_sell_order", self.test_cancel_sell_order)
+            else:
+                print("\n❌ Paper trading verification failed - skipping order tests")
+                self.log_test("buy_option", False, "Skipped - not in paper trading", skipped=True)
+                self.log_test("sell_option", False, "Skipped - not in paper trading", skipped=True)
+                self.log_test("cancel_sell_order", False, "Skipped - not in paper trading", skipped=True)
         
         # Liquidity Analyzer (can skip if no depth data)
         print("\n--- LIQUIDITY ANALYZER ---")
@@ -553,10 +745,12 @@ class TradingAPITester:
                         print(f"    {result['details']}")
         
         if self.skipped > 0:
-            print("\n⊘ Skipped Tests (require market data subscription):")
+            print("\n⊘ Skipped Tests:")
             for result in self.test_results:
                 if "⊘" in result["status"]:
                     print(f"  • {result['test']}")
+                    if result['details']:
+                        print(f"    {result['details']}")
 
 
 # ============================================================================
@@ -580,6 +774,19 @@ if __name__ == "__main__":
     print("⚠️  IMPORTANT: Make sure TWS or IB Gateway is running!")
     print("   Paper trading ports: 4002 (Gateway) or 7497 (TWS)")
     print()
+    
+    # Check for trading tests flag
+    include_trading = '--trading' in sys.argv
+    
+    if include_trading:
+        print("⚠️  ⚠️  ⚠️  TRADING TESTS ENABLED ⚠️  ⚠️  ⚠️")
+        print("This will place ACTUAL ORDERS in your account!")
+        print()
+        confirm = input("Type 'YES' to confirm you want to test trading functions: ")
+        if confirm != "YES":
+            print("Aborted.")
+            sys.exit(1)
+        print()
     
     # Determine port
     if len(sys.argv) > 1 and sys.argv[1] == "--live":
@@ -614,7 +821,7 @@ if __name__ == "__main__":
     try:
         # Run tests
         tester = TradingAPITester(ib)
-        tester.run_all_tests()
+        tester.run_all_tests(include_trading_tests=include_trading)
         exit_code = 0 if tester.failed == 0 else 1
         
     finally:

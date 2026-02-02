@@ -5,7 +5,7 @@
             "name": "Python: Run All Tests",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/test_trading_api.py",
+            "program": "${workspaceFolder}/test_comprehensive_v2.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             "args": []
@@ -17,7 +17,20 @@
             "program": "${workspaceFolder}/test_trading_api.py",
             "console": "integratedTerminal",
             "justMyCode": true,
-            "args": ["--interactive"]
+            "args": [
+                "--interactive"
+            ]
+        },
+        {
+            "name": "Python: Interactive Trading Mode",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_comprehensive_v2.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--trading"
+            ]
         },
         {
             "name": "Python: Debug Single Test - Stock Price",

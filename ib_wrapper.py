@@ -25,6 +25,7 @@ class IBWrapper:
         """Connect to IB TWS or Gateway"""
         try:
             self.ib.connect(self.host, self.port, clientId=self.client_id)
+            self._patch_market_depth()
             self.connected = True
             logger.info(f"Connected to IB at {self.host}:{self.port}")
             return True
@@ -33,6 +34,26 @@ class IBWrapper:
             self.connected = False
             return False
     
+    def _patch_market_depth(self):
+        """Patch ib_insync bug where updateMktDepthL2 crashes on out-of-range positions."""
+        wrapper = self.ib.wrapper
+        original = wrapper.updateMktDepthL2
+
+        def patched_updateMktDepthL2(
+                reqId, position, marketMaker, operation, side, price, size,
+                isSmartDepth=False):
+            ticker = wrapper.reqId2Ticker.get(reqId)
+            if ticker is None:
+                return
+            dom = ticker.domBids if side else ticker.domAsks
+            # Extend the list if position is out of range
+            while position >= len(dom):
+                dom.append(DOMLevel(0, 0, ''))
+            original(reqId, position, marketMaker, operation, side, price,
+                     size, isSmartDepth)
+
+        wrapper.updateMktDepthL2 = patched_updateMktDepthL2
+
     def disconnect(self):
         """Disconnect from IB"""
         if self.connected:
@@ -244,16 +265,18 @@ class IBWrapper:
             logger.error(f"Error getting option price: {e}")
             return None
     
-    def buy_option(self, contract: Contract, quantity: int = 1, 
-                   limit_price: Optional[float] = None) -> Optional[Trade]:
+    def buy_option(self, contract: Contract, quantity: int = 1,
+                   limit_price: Optional[float] = None,
+                   tif: str = 'DAY') -> Optional[Trade]:
         """
         Buy an option contract
-        
+
         Args:
             contract: Option contract to buy
             quantity: Number of contracts
             limit_price: Limit price (None for market order)
-            
+            tif: Time in force - 'DAY' or 'GTC' (Good Till Cancelled)
+
         Returns:
             Trade object or None
         """
@@ -262,7 +285,8 @@ class IBWrapper:
                 order = LimitOrder('BUY', quantity, limit_price)
             else:
                 order = MarketOrder('BUY', quantity)
-            
+            order.tif = tif
+
             trade = self.ib.placeOrder(contract, order)
             logger.info(f"Placed buy order: {contract.localSymbol} x{quantity}")
             
@@ -276,15 +300,17 @@ class IBWrapper:
             return None
     
     def sell_option(self, contract: Contract, quantity: int = 1,
-                    limit_price: Optional[float] = None) -> Optional[Trade]:
+                    limit_price: Optional[float] = None,
+                    tif: str = 'DAY') -> Optional[Trade]:
         """
         Sell an option contract
-        
+
         Args:
             contract: Option contract to sell
             quantity: Number of contracts
             limit_price: Limit price (None for market order)
-            
+            tif: Time in force - 'DAY' or 'GTC' (Good Till Cancelled)
+
         Returns:
             Trade object or None
         """
@@ -293,7 +319,8 @@ class IBWrapper:
                 order = LimitOrder('SELL', quantity, limit_price)
             else:
                 order = MarketOrder('SELL', quantity)
-            
+            order.tif = tif
+
             trade = self.ib.placeOrder(contract, order)
             logger.info(f"Placed sell order: {contract.localSymbol} x{quantity}")
             
@@ -322,21 +349,24 @@ class IBWrapper:
             logger.error(f"Error getting portfolio: {e}")
             return []
     
-    def subscribe_market_depth(self, symbol: str, num_rows: int = 10) -> Optional[Ticker]:
+    def subscribe_market_depth(self, symbol: str, num_rows: int = 50,
+                               exchange: str = 'ISLAND') -> Optional[Ticker]:
         """
         Subscribe to market depth data
-        
+
         Args:
             symbol: Stock symbol
-            num_rows: Number of depth levels (up to 10)
-            
+            num_rows: Number of depth levels
+            exchange: Exchange for depth data (e.g. 'ISLAND', 'ARCA', 'NYSE')
+
         Returns:
             Ticker object with depth data
         """
         try:
-            contract = Stock(symbol, 'SMART', 'USD')
+            contract = Stock(symbol, exchange, 'USD')
             self.ib.qualifyContracts(contract)
             ticker = self.ib.reqMktDepth(contract, numRows=num_rows)
+            self.ib.sleep(2)
             logger.info(f"Subscribed to market depth for {symbol}")
             return ticker
         except Exception as e:
