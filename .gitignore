@@ -22,3 +22,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime files
+trading_bot.db
+trading_bot.log

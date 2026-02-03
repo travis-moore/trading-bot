@@ -11,10 +11,13 @@ import signal
 import sys
 from datetime import datetime, time as dt_time
 from typing import Dict
+from zoneinfo import ZoneInfo
 
+from ib_insync import Contract
 from ib_wrapper import IBWrapper
 from liquidity_analyzer import LiquidityAnalyzer, Pattern
-from trading_engine import TradingEngine, TradeDirection
+from trading_engine import TradingEngine, TradeDirection, Position
+from trade_db import TradeDatabase
 
 
 class SwingTradingBot:
@@ -34,6 +37,7 @@ class SwingTradingBot:
         self.ib = None
         self.analyzer = None
         self.engine = None
+        self.db = None
         self.tickers = {}  # symbol -> ticker mapping
         
         # Statistics
@@ -94,13 +98,20 @@ class SwingTradingBot:
             # Initialize liquidity analyzer
             self.analyzer = LiquidityAnalyzer(self.config['liquidity_analysis'])
             
+            # Initialize database
+            db_path = self.config.get('database', {}).get('path', 'trading_bot.db')
+            self.db = TradeDatabase(db_path)
+
             # Initialize trading engine
             engine_config = {
                 **self.config['risk_management'],
                 **self.config['trading_rules'],
                 **self.config['option_selection']
             }
-            self.engine = TradingEngine(self.ib, self.analyzer, engine_config)
+            self.engine = TradingEngine(self.ib, self.analyzer, engine_config, trade_db=self.db)
+
+            # Reconcile DB positions with IB account state
+            self._reconcile_positions()
             
             # Subscribe to market depth for all symbols
             for symbol in self.config['symbols']:
@@ -122,16 +133,84 @@ class SwingTradingBot:
             self.logger.error(f"Initialization failed: {e}", exc_info=True)
             return False
     
+    def _reconcile_positions(self):
+        """Reconcile DB positions with IB account state on startup."""
+        db_positions = self.db.get_open_positions()
+        if not db_positions:
+            self.logger.info("Reconciliation: no open positions in database")
+            return
+
+        self.logger.info(f"Reconciliation: {len(db_positions)} position(s) in database")
+
+        # Build lookup of IB portfolio by conId
+        ib_portfolio = self.ib.get_portfolio()
+        ib_by_conid = {}
+        for item in ib_portfolio:
+            ib_by_conid[item.contract.conId] = item
+
+        restored = 0
+        closed = 0
+
+        for row in db_positions:
+            con_id = row['con_id']
+            ib_item = ib_by_conid.get(con_id)
+            ib_qty = int(abs(ib_item.position)) if ib_item else 0
+
+            if ib_qty > 0:
+                # Position still exists in IB — reconstruct and restore
+                contract = Contract(conId=con_id)
+                self.ib.ib.qualifyContracts(contract)
+
+                actual_qty = min(ib_qty, row['quantity'])
+                if ib_qty < row['quantity']:
+                    self.logger.warning(
+                        f"  {row['local_symbol']}: partial — DB={row['quantity']}, IB={ib_qty}"
+                    )
+                    self.db.update_position_quantity(row['id'], actual_qty)
+
+                # Handle pending_fill that actually filled
+                if row['status'] == 'pending_fill':
+                    self.db.update_position_status(row['id'], 'open')
+
+                position = Position(
+                    contract=contract,
+                    entry_price=row['entry_price'],
+                    entry_time=datetime.fromisoformat(row['entry_time']),
+                    quantity=actual_qty,
+                    direction=TradeDirection(row['direction']),
+                    stop_loss=row['stop_loss'],
+                    profit_target=row['profit_target'],
+                    pattern=Pattern(row['pattern']),
+                    db_id=row['id'],
+                    order_ref=row['order_ref'],
+                )
+                self.engine.positions.append(position)
+                restored += 1
+                self.logger.info(f"  Restored: {row['local_symbol']} x{actual_qty}")
+            else:
+                # Position gone from IB — closed externally or expired
+                self.db.close_position(
+                    position_id=row['id'],
+                    exit_price=0,
+                    exit_reason='reconciliation_not_found',
+                )
+                closed += 1
+                self.logger.warning(f"  Closed (not in IB): {row['local_symbol']}")
+
+        self.logger.info(
+            f"Reconciliation complete: {restored} restored, {closed} closed"
+        )
+
     def _is_market_hours(self) -> bool:
-        """Check if current time is during market hours"""
+        """Check if current time is during NYSE market hours (US Eastern)"""
         if not self.config['safety']['trading_hours_only']:
             return True
-        
-        now = datetime.now().time()
-        market_open = dt_time(9, 30)   # 9:30 AM
-        market_close = dt_time(16, 0)  # 4:00 PM
-        
-        return market_open <= now <= market_close
+
+        now_et = datetime.now(ZoneInfo("America/New_York")).time()
+        market_open = dt_time(9, 30)
+        market_close = dt_time(16, 0)
+
+        return market_open <= now_et <= market_close
     
     def scan_for_signals(self):
         """Scan all symbols for trading signals"""
@@ -197,9 +276,9 @@ class SwingTradingBot:
         
         if success:
             self.stats['trades_entered'] += 1
-            self.logger.info(f"✓ Trade entered successfully")
+            self.logger.info("Trade entered successfully")
         else:
-            self.logger.warning(f"✗ Failed to enter trade")
+            self.logger.warning("Failed to enter trade")
     
     def check_positions(self):
         """Check and manage open positions"""
@@ -235,7 +314,14 @@ class SwingTradingBot:
         
         if status['account_value']:
             self.logger.info(f"Account value: ${status['account_value']:,.2f}")
-        
+
+        pnl = status.get('pnl')
+        if pnl and pnl['total_trades'] > 0:
+            self.logger.info(
+                f"Bot P&L: ${pnl['total_pnl']:+,.2f} "
+                f"({pnl['wins']}W / {pnl['losses']}L over {pnl['total_trades']} trades)"
+            )
+
         self.logger.info("=" * 60)
     
     def run(self):
@@ -296,10 +382,14 @@ class SwingTradingBot:
             except Exception as e:
                 self.logger.error(f"Error canceling depth for {symbol}: {e}")
         
+        # Close database
+        if self.db:
+            self.db.close()
+
         # Disconnect from IB
         if self.ib:
             self.ib.disconnect()
-        
+
         self.logger.info("Bot shutdown complete")
 
 

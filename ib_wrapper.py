@@ -267,7 +267,8 @@ class IBWrapper:
     
     def buy_option(self, contract: Contract, quantity: int = 1,
                    limit_price: Optional[float] = None,
-                   tif: str = 'DAY') -> Optional[Trade]:
+                   tif: str = 'DAY',
+                   order_ref: Optional[str] = None) -> Optional[Trade]:
         """
         Buy an option contract
 
@@ -276,6 +277,7 @@ class IBWrapper:
             quantity: Number of contracts
             limit_price: Limit price (None for market order)
             tif: Time in force - 'DAY' or 'GTC' (Good Till Cancelled)
+            order_ref: Optional order reference tag for tracking
 
         Returns:
             Trade object or None
@@ -286,22 +288,32 @@ class IBWrapper:
             else:
                 order = MarketOrder('BUY', quantity)
             order.tif = tif
+            if order_ref:
+                order.orderRef = order_ref
 
             trade = self.ib.placeOrder(contract, order)
             logger.info(f"Placed buy order: {contract.localSymbol} x{quantity}")
-            
-            # Wait for fill (with timeout)
+
+            # Wait for order to be processed
             self.ib.sleep(5)
-            
+
+            # Check if order was accepted
+            status = trade.orderStatus.status
+            if status in ('Cancelled', 'Inactive', 'ApiCancelled'):
+                logger.error(f"Order rejected/cancelled: {contract.localSymbol} status={status}")
+                return None
+
+            logger.info(f"Order status: {status}")
             return trade
-            
+
         except Exception as e:
             logger.error(f"Error buying option: {e}")
             return None
     
     def sell_option(self, contract: Contract, quantity: int = 1,
                     limit_price: Optional[float] = None,
-                    tif: str = 'DAY') -> Optional[Trade]:
+                    tif: str = 'DAY',
+                    order_ref: Optional[str] = None) -> Optional[Trade]:
         """
         Sell an option contract
 
@@ -310,6 +322,7 @@ class IBWrapper:
             quantity: Number of contracts
             limit_price: Limit price (None for market order)
             tif: Time in force - 'DAY' or 'GTC' (Good Till Cancelled)
+            order_ref: Optional order reference tag for tracking
 
         Returns:
             Trade object or None
@@ -320,15 +333,24 @@ class IBWrapper:
             else:
                 order = MarketOrder('SELL', quantity)
             order.tif = tif
+            if order_ref:
+                order.orderRef = order_ref
 
             trade = self.ib.placeOrder(contract, order)
             logger.info(f"Placed sell order: {contract.localSymbol} x{quantity}")
-            
-            # Wait for fill (with timeout)
+
+            # Wait for order to be processed
             self.ib.sleep(5)
-            
+
+            # Check if order was accepted
+            status = trade.orderStatus.status
+            if status in ('Cancelled', 'Inactive', 'ApiCancelled'):
+                logger.error(f"Order rejected/cancelled: {contract.localSymbol} status={status}")
+                return None
+
+            logger.info(f"Order status: {status}")
             return trade
-            
+
         except Exception as e:
             logger.error(f"Error selling option: {e}")
             return None

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 
+from ib_insync import Contract
 from ib_wrapper import IBWrapper
 from liquidity_analyzer import LiquidityAnalyzer, Pattern, PatternSignal
 
@@ -34,7 +35,7 @@ class TradeRule:
 @dataclass
 class Position:
     """Represents an open position"""
-    contract: object  # IB Contract
+    contract: Contract
     entry_price: float
     entry_time: datetime
     quantity: int
@@ -42,6 +43,8 @@ class Position:
     stop_loss: float
     profit_target: float
     pattern: Pattern
+    db_id: Optional[int] = None
+    order_ref: Optional[str] = None
 
 
 class TradingEngine:
@@ -49,18 +52,21 @@ class TradingEngine:
     Main trading engine that orchestrates pattern detection and trade execution
     """
     
-    def __init__(self, ib_wrapper: IBWrapper, analyzer: LiquidityAnalyzer, config: Dict):
+    def __init__(self, ib_wrapper: IBWrapper, analyzer: LiquidityAnalyzer, config: Dict,
+                 trade_db=None):
         """
         Initialize trading engine
-        
+
         Args:
             ib_wrapper: IB API wrapper
             analyzer: Liquidity analyzer
             config: Trading configuration
+            trade_db: Optional TradeDatabase for persistence
         """
         self.ib = ib_wrapper
         self.analyzer = analyzer
         self.config = config
+        self.db = trade_db
         
         # Active positions
         self.positions: List[Position] = []
@@ -163,7 +169,7 @@ class TradingEngine:
         return max(1, contracts)
     
     def select_option(self, symbol: str, direction: TradeDirection,
-                     current_price: float) -> Optional[object]:
+                     current_price: float) -> Optional[Contract]:
         """
         Select appropriate option contract based on direction
         
@@ -250,6 +256,12 @@ class TradingEngine:
         if len(self.positions) >= self.max_positions:
             logger.info("Maximum positions reached, skipping trade")
             return False
+
+        # Check if we already have a position in this symbol
+        for p in self.positions:
+            if p.contract.symbol == symbol:
+                logger.info(f"Already holding a position in {symbol}, skipping")
+                return False
         
         # Get current price
         current_price = self.ib.get_stock_price(symbol)
@@ -270,7 +282,9 @@ class TradingEngine:
             return False
         
         bid, ask, last = price_data
-        entry_price = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+        raw_price = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+        # Round to nearest $0.05 tick (standard option tick increment)
+        entry_price = round(raw_price * 20) / 20
         
         if entry_price <= 0:
             logger.error("Invalid option price")
@@ -280,19 +294,53 @@ class TradingEngine:
         quantity = self.calculate_position_size(entry_price)
         
         logger.info(f"Entering trade: {contract.localSymbol} x{quantity} @ ${entry_price:.2f}")
-        
-        # Place order (using limit order at mid-price)
-        trade = self.ib.buy_option(contract, quantity, limit_price=entry_price)
-        
-        if trade is None:
-            logger.error("Failed to place order")
-            return False
-        
+
         # Calculate exit levels
         profit_target = entry_price * (1 + self.profit_target_pct)
         stop_loss = entry_price * (1 - self.stop_loss_pct)
-        
-        # Track position
+
+        # Generate order tag and persist before placing order (crash safety)
+        order_ref = None
+        db_id = None
+        if self.db:
+            order_ref = self.db.generate_order_ref()
+            db_id = self.db.insert_position({
+                'symbol': contract.symbol,
+                'local_symbol': contract.localSymbol,
+                'con_id': contract.conId,
+                'strike': contract.strike,
+                'expiry': contract.lastTradeDateOrContractMonth,
+                'right': contract.right,
+                'exchange': contract.exchange or 'SMART',
+                'entry_price': entry_price,
+                'entry_time': datetime.now().isoformat(),
+                'quantity': quantity,
+                'direction': direction.value,
+                'stop_loss': stop_loss,
+                'profit_target': profit_target,
+                'pattern': signal.pattern.value,
+                'entry_order_id': None,
+                'order_ref': order_ref,
+                'status': 'pending_fill',
+            })
+
+        # Place order (using limit order at mid-price)
+        trade = self.ib.buy_option(
+            contract, quantity, limit_price=entry_price, order_ref=order_ref
+        )
+
+        if trade is None:
+            logger.error("Failed to place order")
+            if self.db and db_id:
+                self.db.close_position(db_id, 0, 'order_failed')
+            return False
+
+        # Update DB with order ID and mark as open
+        if self.db and db_id:
+            self.db.update_position_order_id(db_id, trade.order.orderId)
+            self.db.update_position_status(db_id, 'open')
+
+        # Track position in memory
         position = Position(
             contract=contract,
             entry_price=entry_price,
@@ -301,21 +349,56 @@ class TradingEngine:
             direction=direction,
             stop_loss=stop_loss,
             profit_target=profit_target,
-            pattern=signal.pattern
+            pattern=signal.pattern,
+            db_id=db_id,
+            order_ref=order_ref,
         )
-        
+
         self.positions.append(position)
-        
+
         logger.info(f"Trade entered successfully. Stop: ${stop_loss:.2f}, Target: ${profit_target:.2f}")
         return True
     
     def check_exits(self):
         """Check all positions for exit conditions"""
+        # First, detect positions removed externally (manual sell)
+        self._check_manual_closes()
+
         for position in self.positions[:]:  # Copy list to allow removal
             should_exit, reason = self._should_exit_position(position)
-            
+
             if should_exit:
                 self._exit_position(position, reason)
+
+    def _check_manual_closes(self):
+        """Detect bot positions that were closed manually in TWS/IBKR."""
+        if not self.positions:
+            return
+
+        # Build lookup of IB portfolio by conId
+        ib_portfolio = self.ib.get_portfolio()
+        ib_by_conid: Dict[int, int] = {}
+        for item in ib_portfolio:
+            con_id = item.contract.conId
+            ib_by_conid[con_id] = ib_by_conid.get(con_id, 0) + int(abs(item.position))
+
+        for position in self.positions[:]:
+            con_id = position.contract.conId
+            ib_qty = ib_by_conid.get(con_id, 0)
+
+            if ib_qty == 0:
+                # Position gone from IB entirely — closed manually
+                logger.info(
+                    f"Position {position.contract.localSymbol} no longer in IB portfolio "
+                    f"-- assuming manual close"
+                )
+                if self.db and position.db_id:
+                    self.db.close_position(
+                        position_id=position.db_id,
+                        exit_price=0,
+                        exit_reason='manual_close',
+                    )
+                self.positions.remove(position)
     
     def _should_exit_position(self, position: Position) -> tuple[bool, str]:
         """
@@ -354,12 +437,23 @@ class TradingEngine:
     def _exit_position(self, position: Position, reason: str):
         """Exit a position"""
         logger.info(f"Exiting position: {position.contract.localSymbol}. Reason: {reason}")
-        
+
         # Place sell order
         trade = self.ib.sell_option(position.contract, position.quantity)
-        
+
         if trade:
-            # Remove from positions
+            # Persist to trade history
+            if self.db and position.db_id:
+                exit_price = 0
+                if trade.orderStatus and trade.orderStatus.avgFillPrice > 0:
+                    exit_price = trade.orderStatus.avgFillPrice
+                self.db.close_position(
+                    position_id=position.db_id,
+                    exit_price=exit_price,
+                    exit_reason=reason,
+                    exit_order_id=trade.order.orderId,
+                )
+            # Remove from in-memory positions
             self.positions.remove(position)
             logger.info(f"Position exited successfully")
         else:
@@ -367,9 +461,13 @@ class TradingEngine:
     
     def get_status(self) -> Dict:
         """Get current trading status"""
-        return {
+        status = {
             'positions': len(self.positions),
             'max_positions': self.max_positions,
-            'active_contracts': [p.contract.localSymbol for p in self.positions],
-            'account_value': self.ib.get_account_value()
+            'active_contracts': [f"{p.contract.localSymbol} x{p.quantity}" for p in self.positions],
+            'account_value': self.ib.get_account_value(),
+            'pnl': None,
         }
+        if self.db:
+            status['pnl'] = self.db.get_bot_pnl_summary()
+        return status
