@@ -15,10 +15,10 @@ symbols:
 
 # Liquidity Analyzer Settings
 liquidity_analysis:
-  liquidity_threshold: 1000      # Minimum order size to consider a zone
-  zone_proximity: 0.10           # Distance from zone to trigger (dollars)
+  liquidity_threshold: 20000      # Minimum order size to consider a zone
+  zone_proximity: 0.25           # Distance from zone to trigger (dollars)
   imbalance_threshold: 0.6       # Order imbalance threshold (0-1)
-  num_levels: 10                 # Number of order book levels to analyze
+  num_levels: 100                 # Number of order book levels to analyze
 
 # Trading Rules - Pattern confidence thresholds
 trading_rules:
@@ -36,6 +36,12 @@ risk_management:
   stop_loss_pct: 0.30            # Stop loss at 30% loss
   max_hold_days: 30              # Maximum days to hold position
 
+# Order Management
+order_management:
+  use_bracket_orders: true       # Attach stop loss and take profit to buy orders
+  order_timeout_seconds: 60      # Cancel unfilled orders after this time
+  price_drift_threshold: 0.10    # Cancel if price drifts more than 10% from limit
+
 # Option Selection
 option_selection:
   min_dte: 14                    # Minimum days to expiration
@@ -45,7 +51,7 @@ option_selection:
 
 # Bot Operation
 operation:
-  scan_interval: 60              # Seconds between scans
+  scan_interval: 5              # Seconds between scans
   market_data_refresh: 5         # Seconds between depth data updates
   enable_paper_trading: true     # Use paper trading account
   log_level: "INFO"              # DEBUG, INFO, WARNING, ERROR

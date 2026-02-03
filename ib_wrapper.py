@@ -445,3 +445,172 @@ class IBWrapper:
             logger.info(f"Cancelled {len(open_orders)} open orders")
         except Exception as e:
             logger.error(f"Error canceling orders: {e}")
+
+    def buy_option_bracket(
+        self,
+        contract: Contract,
+        quantity: int,
+        entry_price: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+        tif: str = 'GTC',
+        order_ref: Optional[str] = None
+    ) -> Optional[List[Trade]]:
+        """
+        Place a bracket order: buy with attached stop loss and take profit.
+
+        The stop loss and take profit orders are OCA (One Cancels All) -
+        when one fills, the other is automatically cancelled.
+
+        Args:
+            contract: Option contract to buy
+            quantity: Number of contracts
+            entry_price: Limit price for entry
+            stop_loss_price: Stop loss trigger price
+            take_profit_price: Take profit limit price
+            tif: Time in force - 'GTC' recommended for brackets
+            order_ref: Optional order reference tag
+
+        Returns:
+            List of Trade objects [entry, stop_loss, take_profit] or None
+        """
+        try:
+            # Create bracket order using IB's bracket order helper
+            bracket = self.ib.bracketOrder(
+                action='BUY',
+                quantity=quantity,
+                limitPrice=entry_price,
+                takeProfitPrice=take_profit_price,
+                stopLossPrice=stop_loss_price,
+            )
+
+            # Unpack the three orders
+            entry_order, take_profit_order, stop_loss_order = bracket
+
+            # Set time in force on all orders
+            entry_order.tif = tif
+            take_profit_order.tif = tif
+            stop_loss_order.tif = tif
+
+            # Set order reference if provided
+            if order_ref:
+                entry_order.orderRef = order_ref
+                take_profit_order.orderRef = f"{order_ref}_TP"
+                stop_loss_order.orderRef = f"{order_ref}_SL"
+
+            # Place the bracket orders
+            entry_trade = self.ib.placeOrder(contract, entry_order)
+            take_profit_trade = self.ib.placeOrder(contract, take_profit_order)
+            stop_loss_trade = self.ib.placeOrder(contract, stop_loss_order)
+
+            logger.info(
+                f"Placed bracket order: {contract.localSymbol} x{quantity} "
+                f"@ ${entry_price:.2f} (SL: ${stop_loss_price:.2f}, TP: ${take_profit_price:.2f})"
+            )
+
+            # Wait for orders to be acknowledged
+            self.ib.sleep(2)
+
+            # Check entry order status
+            status = entry_trade.orderStatus.status
+            if status in ('Cancelled', 'Inactive', 'ApiCancelled'):
+                logger.error(f"Bracket entry order rejected: {status}")
+                return None
+
+            logger.info(f"Bracket order status: entry={status}")
+            return [entry_trade, stop_loss_trade, take_profit_trade]
+
+        except Exception as e:
+            logger.error(f"Error placing bracket order: {e}")
+            return None
+
+    def get_open_orders(self) -> List[Trade]:
+        """Get all open/pending orders."""
+        try:
+            return self.ib.openTrades()
+        except Exception as e:
+            logger.error(f"Error getting open orders: {e}")
+            return []
+
+    def get_order_status(self, trade: Trade) -> Dict:
+        """
+        Get detailed status of an order.
+
+        Returns:
+            Dict with status info including:
+            - status: Order status string
+            - filled: Number of contracts filled
+            - remaining: Number of contracts remaining
+            - avg_fill_price: Average fill price (if any fills)
+            - last_fill_time: Time of last fill
+        """
+        try:
+            status = trade.orderStatus
+            return {
+                'status': status.status,
+                'filled': status.filled,
+                'remaining': status.remaining,
+                'avg_fill_price': status.avgFillPrice,
+                'last_fill_time': trade.log[-1].time if trade.log else None,
+                'order_id': trade.order.orderId,
+            }
+        except Exception as e:
+            logger.error(f"Error getting order status: {e}")
+            return {'status': 'Unknown', 'filled': 0, 'remaining': 0}
+
+    def modify_order_price(self, trade: Trade, new_price: float) -> bool:
+        """
+        Modify the limit price of a pending order.
+
+        Args:
+            trade: Trade object to modify
+            new_price: New limit price
+
+        Returns:
+            True if modification submitted successfully
+        """
+        try:
+            order = trade.order
+            if order.orderType == 'LMT':
+                order.lmtPrice = new_price
+            elif order.orderType == 'STP':
+                order.auxPrice = new_price
+            else:
+                logger.warning(f"Cannot modify price for order type: {order.orderType}")
+                return False
+
+            self.ib.placeOrder(trade.contract, order)
+            logger.info(f"Modified order {order.orderId} price to ${new_price:.2f}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error modifying order: {e}")
+            return False
+
+    def cancel_order(self, trade: Trade) -> bool:
+        """
+        Cancel a specific order.
+
+        Args:
+            trade: Trade object to cancel
+
+        Returns:
+            True if cancellation submitted successfully
+        """
+        try:
+            self.ib.cancelOrder(trade.order)
+            logger.info(f"Cancelled order {trade.order.orderId}")
+            return True
+        except Exception as e:
+            logger.error(f"Error cancelling order: {e}")
+            return False
+
+    def is_order_filled(self, trade: Trade) -> bool:
+        """Check if an order is completely filled."""
+        return trade.orderStatus.status == 'Filled'
+
+    def is_order_pending(self, trade: Trade) -> bool:
+        """Check if an order is still pending/working."""
+        return trade.orderStatus.status in (
+            'PendingSubmit', 'PreSubmitted', 'Submitted'
+        )

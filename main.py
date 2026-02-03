@@ -86,7 +86,10 @@ class SwingTradingBot:
                 logging.StreamHandler(sys.stdout)
             ]
         )
-        
+
+        # Suppress noisy ib_insync portfolio update messages
+        logging.getLogger('ib_insync.wrapper').setLevel(logging.WARNING)
+
         self.logger = logging.getLogger(__name__)
     
     def _signal_handler(self, signum, frame):
@@ -128,7 +131,8 @@ class SwingTradingBot:
             engine_config = {
                 **self.config['risk_management'],
                 **self.config['trading_rules'],
-                **self.config['option_selection']
+                **self.config['option_selection'],
+                **self.config.get('order_management', {}),
             }
             self.engine = TradingEngine(
                 self.ib, self.analyzer, engine_config,
@@ -245,35 +249,46 @@ class SwingTradingBot:
     def scan_for_signals(self):
         """Scan all symbols for trading signals"""
         self.stats['scans'] += 1
-        
+
         for symbol, ticker in self.tickers.items():
             try:
                 # Get current price
                 current_price = self.ib.get_stock_price(symbol)
                 if current_price is None:
                     continue
-                
+
+                # Analyze order book for support/resistance
+                analysis = self.analyzer.analyze_book(ticker)
+                nearest = self.analyzer.get_nearest_zones(current_price, analysis)
+
+                # Format support/resistance for logging
+                support_str = f"${nearest['support'].price:.2f}" if nearest['support'] else "none"
+                resistance_str = f"${nearest['resistance'].price:.2f}" if nearest['resistance'] else "none"
+
                 # Detect pattern
                 signal = self.analyzer.detect_pattern(ticker, current_price)
-                
+
                 if signal is None:
                     continue
-                
-                # Log non-consolidation patterns
+
+                # Log non-consolidation patterns with support/resistance info
                 if signal.pattern != Pattern.CONSOLIDATION:
+                    imbalance = signal.imbalance if signal.imbalance is not None else 0
+                    imbalance_dir = "^" if imbalance > 0 else "v" if imbalance < 0 else "-"
                     self.logger.info(
-                        f"{symbol}: {signal.pattern.value} "
-                        f"(confidence: {signal.confidence:.2f}, "
-                        f"imbalance: {signal.imbalance:.2f})"
+                        f"{symbol}: ${current_price:.2f} - {signal.pattern.value} "
+                        f"(confidence: {signal.confidence:.2f}) | "
+                        f"support: {support_str}, resistance: {resistance_str}, "
+                        f"imbalance: {imbalance:+.2f} {imbalance_dir}"
                     )
                     self.stats['signals_detected'] += 1
-                    
+
                     # Evaluate if signal meets trading rules
                     direction = self.engine.evaluate_signal(signal)
-                    
+
                     if direction and direction != TradeDirection.NO_TRADE:
                         self._handle_trade_signal(symbol, direction, signal, current_price)
-                
+
             except Exception as e:
                 self.logger.error(f"Error scanning {symbol}: {e}", exc_info=True)
     
@@ -328,7 +343,7 @@ class SwingTradingBot:
         """Print current bot status"""
         status = self.engine.get_status()
         uptime = datetime.now() - self.stats['start_time']
-        
+
         self.logger.info("=" * 60)
         self.logger.info("BOT STATUS")
         self.logger.info("=" * 60)
@@ -337,11 +352,17 @@ class SwingTradingBot:
         self.logger.info(f"Signals detected: {self.stats['signals_detected']}")
         self.logger.info(f"Trades entered: {self.stats['trades_entered']}")
         self.logger.info(f"Trades exited: {self.stats['trades_exited']}")
-        self.logger.info(f"Open positions: {status['positions']}/{status['max_positions']}")
-        
+        self.logger.info(
+            f"Positions: {status['positions']} open, "
+            f"{status['pending_orders']} pending / {status['max_positions']} max"
+        )
+
+        if status['pending_contracts']:
+            self.logger.info(f"Pending orders: {', '.join(status['pending_contracts'])}")
+
         if status['active_contracts']:
             self.logger.info(f"Active contracts: {', '.join(status['active_contracts'])}")
-        
+
         if status['account_value']:
             self.logger.info(f"Account value: ${status['account_value']:,.2f}")
 
@@ -604,6 +625,9 @@ Available commands:
             while self.running:
                 # Process any pending user commands
                 self._process_pending_command()
+
+                # Check pending orders for fills/timeouts
+                self.engine.check_pending_orders()
 
                 # Scan for signals
                 self.scan_for_signals()

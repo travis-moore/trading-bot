@@ -158,123 +158,198 @@ class LiquidityAnalyzer:
     
     def detect_pattern(self, ticker, current_price: float) -> Optional[PatternSignal]:
         """
-        Detect trading patterns from order book
-        
+        Detect trading patterns from order book.
+
+        Confidence is calculated from zone strength and adjusted by imbalance:
+        - Bullish signals (support bounce) get boosted by positive imbalance
+        - Bearish signals (resistance rejection) get boosted by negative imbalance
+        - Conflicting imbalance reduces confidence
+
         Args:
             ticker: IB ticker with depth data
             current_price: Current stock price
-            
+
         Returns:
             PatternSignal or None
         """
         analysis = self.analyze_book(ticker)
-        
+        imbalance = analysis['imbalance']
+
         # Check for testing zones
         for zone in analysis['support']:
             distance = abs(current_price - zone.price)
             if distance <= self.zone_proximity:
-                # Price is testing support
+                # Price is testing support (bullish scenario)
+                base_confidence = zone.strength
                 if self._is_bouncing_off_support(current_price, zone.price):
+                    # Rejection at support - positive imbalance confirms the bounce
+                    adjusted_confidence = self._adjust_confidence_by_imbalance(
+                        base_confidence, imbalance, bullish=True
+                    )
                     return PatternSignal(
                         pattern=Pattern.REJECTION_AT_SUPPORT,
-                        confidence=zone.strength,
+                        confidence=adjusted_confidence,
                         price_level=zone.price,
-                        imbalance=analysis['imbalance'],
-                        metadata={'zone_size': zone.size}
+                        imbalance=imbalance,
+                        metadata={'zone_size': zone.size, 'raw_strength': base_confidence}
                     )
                 else:
+                    # Just testing support
+                    adjusted_confidence = self._adjust_confidence_by_imbalance(
+                        base_confidence * 0.7, imbalance, bullish=True
+                    )
                     return PatternSignal(
                         pattern=Pattern.TESTING_SUPPORT,
-                        confidence=zone.strength * 0.7,
+                        confidence=adjusted_confidence,
                         price_level=zone.price,
-                        imbalance=analysis['imbalance'],
-                        metadata={'zone_size': zone.size}
+                        imbalance=imbalance,
+                        metadata={'zone_size': zone.size, 'raw_strength': base_confidence}
                     )
-        
+
         for zone in analysis['resistance']:
             distance = abs(current_price - zone.price)
             if distance <= self.zone_proximity:
-                # Price is testing resistance
+                # Price is testing resistance (bearish scenario)
+                base_confidence = zone.strength
                 if self._is_rejecting_at_resistance(current_price, zone.price):
+                    # Rejection at resistance - negative imbalance confirms the rejection
+                    adjusted_confidence = self._adjust_confidence_by_imbalance(
+                        base_confidence, imbalance, bullish=False
+                    )
                     return PatternSignal(
                         pattern=Pattern.REJECTION_AT_RESISTANCE,
-                        confidence=zone.strength,
+                        confidence=adjusted_confidence,
                         price_level=zone.price,
-                        imbalance=analysis['imbalance'],
-                        metadata={'zone_size': zone.size}
+                        imbalance=imbalance,
+                        metadata={'zone_size': zone.size, 'raw_strength': base_confidence}
                     )
                 else:
+                    # Just testing resistance
+                    adjusted_confidence = self._adjust_confidence_by_imbalance(
+                        base_confidence * 0.7, imbalance, bullish=False
+                    )
                     return PatternSignal(
                         pattern=Pattern.TESTING_RESISTANCE,
-                        confidence=zone.strength * 0.7,
+                        confidence=adjusted_confidence,
                         price_level=zone.price,
-                        imbalance=analysis['imbalance'],
-                        metadata={'zone_size': zone.size}
+                        imbalance=imbalance,
+                        metadata={'zone_size': zone.size, 'raw_strength': base_confidence}
                     )
-        
+
         # Check for breakout conditions based on order imbalance
-        if analysis['imbalance'] > self.imbalance_threshold:
+        if imbalance > self.imbalance_threshold:
             return PatternSignal(
                 pattern=Pattern.POTENTIAL_BREAKOUT_UP,
-                confidence=abs(analysis['imbalance']),
+                confidence=abs(imbalance),
                 price_level=None,
-                imbalance=analysis['imbalance'],
+                imbalance=imbalance,
                 metadata={'bid_depth': analysis['bid_depth_total']}
             )
-        
-        if analysis['imbalance'] < -self.imbalance_threshold:
+
+        if imbalance < -self.imbalance_threshold:
             return PatternSignal(
                 pattern=Pattern.POTENTIAL_BREAKOUT_DOWN,
-                confidence=abs(analysis['imbalance']),
+                confidence=abs(imbalance),
                 price_level=None,
-                imbalance=analysis['imbalance'],
+                imbalance=imbalance,
                 metadata={'ask_depth': analysis['ask_depth_total']}
             )
-        
+
         # Default: consolidation
         return PatternSignal(
             pattern=Pattern.CONSOLIDATION,
             confidence=0.5,
             price_level=current_price,
-            imbalance=analysis['imbalance'],
+            imbalance=imbalance,
             metadata={}
         )
+
+    def _adjust_confidence_by_imbalance(self, base_confidence: float,
+                                         imbalance: float, bullish: bool) -> float:
+        """
+        Adjust confidence based on whether imbalance confirms or contradicts the signal.
+
+        Args:
+            base_confidence: Starting confidence from zone strength
+            imbalance: Order book imbalance (-1 to +1)
+            bullish: True if signal is bullish (support bounce, breakout up)
+
+        Returns:
+            Adjusted confidence (clamped to 0.1 - 1.0)
+        """
+        # Imbalance adjustment factor (how much imbalance affects confidence)
+        # At max imbalance (±1.0), this adds/subtracts up to 0.3 from confidence
+        imbalance_weight = 0.3
+
+        if bullish:
+            # Positive imbalance confirms bullish signal, negative contradicts
+            adjustment = imbalance * imbalance_weight
+        else:
+            # Negative imbalance confirms bearish signal, positive contradicts
+            adjustment = -imbalance * imbalance_weight
+
+        adjusted = base_confidence + adjustment
+        return max(0.1, min(1.0, adjusted))
     
-    def _is_bouncing_off_support(self, current_price: float, 
+    def _is_bouncing_off_support(self, current_price: float,
                                   support_level: float) -> bool:
         """
-        Detect if price is bouncing off support
-        (requires previous price tracking)
+        Detect if price is bouncing off support.
+
+        A bounce is detected when:
+        - Price was near support (within zone_proximity) in previous scan
+        - Price is now moving UP away from support
+        - The move up is meaningful (not just noise)
         """
         if self.previous_price is None:
             self.previous_price = current_price
             return False
-        
-        # Price was below support and is now moving back up
-        bouncing = (
-            self.previous_price <= support_level and 
-            current_price > support_level
-        )
-        
+
+        # Was previous price near support? (within zone_proximity)
+        prev_distance = abs(self.previous_price - support_level)
+        was_near_support = prev_distance <= self.zone_proximity
+
+        # Is price now moving up (away from support)?
+        moving_up = current_price > self.previous_price
+
+        # Minimum move to consider it a bounce (not just noise)
+        # Use 20% of zone_proximity as minimum move threshold
+        min_move = self.zone_proximity * 0.2
+        move_size = current_price - self.previous_price
+
+        bouncing = was_near_support and moving_up and move_size >= min_move
+
         self.previous_price = current_price
         return bouncing
     
     def _is_rejecting_at_resistance(self, current_price: float,
                                      resistance_level: float) -> bool:
         """
-        Detect if price is rejecting at resistance
-        (requires previous price tracking)
+        Detect if price is rejecting at resistance.
+
+        A rejection is detected when:
+        - Price was near resistance (within zone_proximity) in previous scan
+        - Price is now moving DOWN away from resistance
+        - The move down is meaningful (not just noise)
         """
         if self.previous_price is None:
             self.previous_price = current_price
             return False
-        
-        # Price was above resistance and is now moving back down
-        rejecting = (
-            self.previous_price >= resistance_level and
-            current_price < resistance_level
-        )
-        
+
+        # Was previous price near resistance? (within zone_proximity)
+        prev_distance = abs(self.previous_price - resistance_level)
+        was_near_resistance = prev_distance <= self.zone_proximity
+
+        # Is price now moving down (away from resistance)?
+        moving_down = current_price < self.previous_price
+
+        # Minimum move to consider it a rejection (not just noise)
+        # Use 20% of zone_proximity as minimum move threshold
+        min_move = self.zone_proximity * 0.2
+        move_size = self.previous_price - current_price
+
+        rejecting = was_near_resistance and moving_down and move_size >= min_move
+
         self.previous_price = current_price
         return rejecting
     

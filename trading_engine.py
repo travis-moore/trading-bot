@@ -46,8 +46,27 @@ class TradeRule:
 
 
 @dataclass
+class PendingOrder:
+    """Represents a pending (unfilled) order with bracket orders."""
+    contract: Contract
+    entry_price: float
+    order_time: datetime
+    quantity: int
+    direction: TradeDirection
+    stop_loss: float
+    profit_target: float
+    pattern: Union[Pattern, str]
+    entry_trade: Any  # ib_insync Trade object for entry order
+    stop_loss_trade: Optional[Any] = None  # Trade object for stop loss
+    take_profit_trade: Optional[Any] = None  # Trade object for take profit
+    db_id: Optional[int] = None
+    order_ref: Optional[str] = None
+    strategy_name: Optional[str] = None
+
+
+@dataclass
 class Position:
-    """Represents an open position"""
+    """Represents an open (filled) position"""
     contract: Contract
     entry_price: float
     entry_time: datetime
@@ -59,6 +78,8 @@ class Position:
     db_id: Optional[int] = None
     order_ref: Optional[str] = None
     strategy_name: Optional[str] = None  # Which strategy opened this position
+    stop_loss_trade: Optional[Any] = None  # Attached stop loss order
+    take_profit_trade: Optional[Any] = None  # Attached take profit order
 
 
 class TradingEngine:
@@ -90,8 +111,11 @@ class TradingEngine:
         self.db = trade_db
         self.strategy_manager = strategy_manager
 
-        # Active positions
+        # Active positions (filled orders)
         self.positions: List[Position] = []
+
+        # Pending orders (not yet filled)
+        self.pending_orders: List[PendingOrder] = []
 
         # Trading rules (legacy mode)
         self.rules = self._setup_rules()
@@ -105,6 +129,11 @@ class TradingEngine:
         self.profit_target_pct = config.get('profit_target_pct', 0.5)  # 50%
         self.stop_loss_pct = config.get('stop_loss_pct', 0.3)  # 30%
         self.max_hold_days = config.get('max_hold_days', 30)
+
+        # Order management settings
+        self.order_timeout_seconds = config.get('order_timeout_seconds', 60)
+        self.price_drift_threshold = config.get('price_drift_threshold', 0.10)  # 10% drift
+        self.use_bracket_orders = config.get('use_bracket_orders', True)
 
     @property
     def using_strategies(self) -> bool:
@@ -203,13 +232,17 @@ class TradingEngine:
 
         return None
     
-    def calculate_position_size(self, option_price: float) -> int:
+    def calculate_position_size(self, option_price: float, confidence: float = 1.0) -> int:
         """
-        Calculate position size based on account value
-        
+        Calculate position size based on account value and signal confidence.
+
+        Position size is scaled by confidence: higher confidence = larger position.
+        For example, 0.7 confidence = 70% of the base position size.
+
         Args:
             option_price: Price per option contract
-            
+            confidence: Signal confidence (0.0 to 1.0), scales position size
+
         Returns:
             Number of contracts to trade
         """
@@ -217,21 +250,27 @@ class TradingEngine:
         if account_value is None:
             logger.warning("Could not get account value, using default position size")
             return 1
-        
-        # Calculate dollar amount to risk
-        position_value = account_value * self.position_size_pct
-        
+
+        # Calculate base dollar amount to risk
+        base_position_value = account_value * self.position_size_pct
+
+        # Scale by confidence (e.g., 0.7 confidence = 70% of base size)
+        confidence = max(0.1, min(1.0, confidence))  # Clamp to [0.1, 1.0]
+        position_value = base_position_value * confidence
+
         # Calculate contracts (each option controls 100 shares)
         contracts = int(position_value / (option_price * 100))
-        
+
         # Apply limits
         contracts = max(1, min(contracts, self.max_positions))
-        
+
         # Check against max position size
         total_cost = contracts * option_price * 100
         if total_cost > self.max_position_size:
             contracts = int(self.max_position_size / (option_price * 100))
-        
+
+        logger.debug(f"Position sizing: confidence={confidence:.2f}, base=${base_position_value:.0f}, scaled=${position_value:.0f}, contracts={contracts}")
+
         return max(1, contracts)
     
     def select_option(self, symbol: str, direction: TradeDirection,
@@ -309,62 +348,76 @@ class TradingEngine:
     def enter_trade(self, symbol: str, direction: TradeDirection,
                    signal: PatternSignal) -> bool:
         """
-        Enter a trade based on signal
-        
+        Enter a trade based on signal using bracket orders.
+
+        Places a limit buy order with attached stop loss and take profit orders.
+        The order is tracked as 'pending' until the entry fills.
+
         Args:
             symbol: Stock symbol
             direction: Trade direction
             signal: Pattern signal
-            
+
         Returns:
-            True if trade entered successfully
+            True if order placed successfully (not necessarily filled)
         """
-        # Check if we can take more positions
-        if len(self.positions) >= self.max_positions:
-            logger.info("Maximum positions reached, skipping trade")
+        # Check if we can take more positions (include pending orders)
+        total_exposure = len(self.positions) + len(self.pending_orders)
+        if total_exposure >= self.max_positions:
+            logger.info("Maximum positions/orders reached, skipping trade")
             return False
 
-        # Check if we already have a position in this symbol
+        # Check if we already have a position or pending order in this symbol
         for p in self.positions:
             if p.contract.symbol == symbol:
                 logger.info(f"Already holding a position in {symbol}, skipping")
                 return False
-        
+        for po in self.pending_orders:
+            if po.contract.symbol == symbol:
+                logger.info(f"Already have pending order in {symbol}, skipping")
+                return False
+
         # Get current price
         current_price = self.ib.get_stock_price(symbol)
         if current_price is None:
             logger.error("Could not get current price")
             return False
-        
+
         # Select option
         contract = self.select_option(symbol, direction, current_price)
         if contract is None:
             logger.error("Could not select option contract")
             return False
-        
+
         # Get option price
         price_data = self.ib.get_option_price(contract)
         if price_data is None:
             logger.error("Could not get option price")
             return False
-        
+
         bid, ask, last = price_data
         raw_price = (bid + ask) / 2 if bid > 0 and ask > 0 else last
         # Round to nearest $0.05 tick (standard option tick increment)
         entry_price = round(raw_price * 20) / 20
-        
+
         if entry_price <= 0:
             logger.error("Invalid option price")
             return False
-        
-        # Calculate position size
-        quantity = self.calculate_position_size(entry_price)
-        
-        logger.info(f"Entering trade: {contract.localSymbol} x{quantity} @ ${entry_price:.2f}")
 
-        # Calculate exit levels
-        profit_target = entry_price * (1 + self.profit_target_pct)
-        stop_loss = entry_price * (1 - self.stop_loss_pct)
+        # Calculate position size (scaled by signal confidence)
+        signal_confidence = getattr(signal, 'confidence', 1.0)
+        quantity = self.calculate_position_size(entry_price, confidence=signal_confidence)
+
+        # Calculate exit levels (round to $0.05 tick)
+        raw_profit_target = entry_price * (1 + self.profit_target_pct)
+        raw_stop_loss = entry_price * (1 - self.stop_loss_pct)
+        profit_target = round(raw_profit_target * 20) / 20
+        stop_loss = round(raw_stop_loss * 20) / 20
+
+        logger.info(
+            f"Placing bracket order: {contract.localSymbol} x{quantity} "
+            f"@ ${entry_price:.2f} (SL: ${stop_loss:.2f}, TP: ${profit_target:.2f})"
+        )
 
         # Get strategy name from signal metadata (if using strategy system)
         strategy_name = getattr(signal, 'metadata', {}).get('strategy', 'swing_trading')
@@ -395,42 +448,197 @@ class TradingEngine:
                 'status': 'pending_fill',
             })
 
-        # Place order (using limit order at mid-price)
-        trade = self.ib.buy_option(
-            contract, quantity, limit_price=entry_price, order_ref=order_ref
-        )
+        # Place bracket order (entry + stop loss + take profit)
+        if self.use_bracket_orders:
+            trades = self.ib.buy_option_bracket(
+                contract=contract,
+                quantity=quantity,
+                entry_price=entry_price,
+                stop_loss_price=stop_loss,
+                take_profit_price=profit_target,
+                tif='GTC',
+                order_ref=order_ref,
+            )
 
-        if trade is None:
-            logger.error("Failed to place order")
-            if self.db and db_id:
-                self.db.close_position(db_id, 0, 'order_failed')
-            return False
+            if trades is None:
+                logger.error("Failed to place bracket order")
+                if self.db and db_id:
+                    self.db.close_position(db_id, 0, 'order_failed')
+                return False
 
-        # Update DB with order ID and mark as open
+            entry_trade, stop_loss_trade, take_profit_trade = trades
+        else:
+            # Fallback to simple limit order (no bracket)
+            entry_trade = self.ib.buy_option(
+                contract, quantity, limit_price=entry_price, order_ref=order_ref
+            )
+            if entry_trade is None:
+                logger.error("Failed to place order")
+                if self.db and db_id:
+                    self.db.close_position(db_id, 0, 'order_failed')
+                return False
+            stop_loss_trade = None
+            take_profit_trade = None
+
+        # Update DB with order ID (keep status as pending_fill)
         if self.db and db_id:
-            self.db.update_position_order_id(db_id, trade.order.orderId)
-            self.db.update_position_status(db_id, 'open')
+            self.db.update_position_order_id(db_id, entry_trade.order.orderId)
 
-        # Track position in memory
-        position = Position(
+        # Track as pending order (not position yet)
+        pending = PendingOrder(
             contract=contract,
             entry_price=entry_price,
-            entry_time=datetime.now(),
+            order_time=datetime.now(),
             quantity=quantity,
             direction=direction,
             stop_loss=stop_loss,
             profit_target=profit_target,
             pattern=signal.pattern,
+            entry_trade=entry_trade,
+            stop_loss_trade=stop_loss_trade,
+            take_profit_trade=take_profit_trade,
             db_id=db_id,
             order_ref=order_ref,
             strategy_name=strategy_name,
         )
 
-        self.positions.append(position)
+        self.pending_orders.append(pending)
 
-        logger.info(f"Trade entered successfully. Stop: ${stop_loss:.2f}, Target: ${profit_target:.2f}")
+        logger.info(
+            f"Bracket order placed (pending fill). "
+            f"Entry: ${entry_price:.2f}, Stop: ${stop_loss:.2f}, Target: ${profit_target:.2f}"
+        )
         return True
     
+    def check_pending_orders(self):
+        """
+        Check status of pending orders and handle fills/cancellations/timeouts.
+
+        This should be called periodically in the main loop.
+        """
+        if not self.pending_orders:
+            return
+
+        for pending in self.pending_orders[:]:  # Copy list to allow removal
+            try:
+                self._check_single_pending_order(pending)
+            except Exception as e:
+                logger.error(f"Error checking pending order: {e}")
+
+    def _check_single_pending_order(self, pending: PendingOrder):
+        """Check and handle a single pending order."""
+        # Check if entry order filled
+        if self.ib.is_order_filled(pending.entry_trade):
+            self._convert_pending_to_position(pending)
+            return
+
+        # Check if entry order was cancelled
+        status = self.ib.get_order_status(pending.entry_trade)
+        if status['status'] in ('Cancelled', 'Inactive', 'ApiCancelled'):
+            logger.info(f"Order cancelled for {pending.contract.localSymbol}")
+            self._remove_pending_order(pending, 'cancelled')
+            return
+
+        # Check for timeout
+        age_seconds = (datetime.now() - pending.order_time).total_seconds()
+        if age_seconds > self.order_timeout_seconds:
+            # Get current market price to check drift
+            price_data = self.ib.get_option_price(pending.contract)
+            if price_data:
+                bid, ask, last = price_data
+                current_mid = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+
+                if current_mid > 0:
+                    drift = abs(current_mid - pending.entry_price) / pending.entry_price
+
+                    if drift > self.price_drift_threshold:
+                        # Price has drifted too far - cancel the order
+                        logger.warning(
+                            f"Order timeout with price drift: {pending.contract.localSymbol} "
+                            f"(entry: ${pending.entry_price:.2f}, current: ${current_mid:.2f}, "
+                            f"drift: {drift:.1%})"
+                        )
+                        self._cancel_pending_order(pending, 'timeout_drift')
+                        return
+                    else:
+                        # Price hasn't drifted much - optionally adjust
+                        logger.info(
+                            f"Order pending {age_seconds:.0f}s: {pending.contract.localSymbol} "
+                            f"(entry: ${pending.entry_price:.2f}, current: ${current_mid:.2f})"
+                        )
+                        # Could add price adjustment logic here if desired
+            else:
+                # Can't get price - cancel after timeout
+                logger.warning(
+                    f"Order timeout, no price data: {pending.contract.localSymbol}"
+                )
+                self._cancel_pending_order(pending, 'timeout_no_price')
+
+    def _convert_pending_to_position(self, pending: PendingOrder):
+        """Convert a filled pending order to an active position."""
+        logger.info(f"Order filled: {pending.contract.localSymbol} x{pending.quantity}")
+
+        # Get actual fill price
+        status = self.ib.get_order_status(pending.entry_trade)
+        fill_price = status['avg_fill_price'] if status['avg_fill_price'] > 0 else pending.entry_price
+
+        # Create position
+        position = Position(
+            contract=pending.contract,
+            entry_price=fill_price,
+            entry_time=datetime.now(),
+            quantity=pending.quantity,
+            direction=pending.direction,
+            stop_loss=pending.stop_loss,
+            profit_target=pending.profit_target,
+            pattern=pending.pattern,
+            db_id=pending.db_id,
+            order_ref=pending.order_ref,
+            strategy_name=pending.strategy_name,
+            stop_loss_trade=pending.stop_loss_trade,
+            take_profit_trade=pending.take_profit_trade,
+        )
+
+        self.positions.append(position)
+        self.pending_orders.remove(pending)
+
+        # Update database
+        if self.db and pending.db_id:
+            self.db.update_position_status(pending.db_id, 'open')
+            # Update entry price if different from limit price
+            if abs(fill_price - pending.entry_price) > 0.01:
+                logger.info(f"Fill price ${fill_price:.2f} differs from limit ${pending.entry_price:.2f}")
+
+        logger.info(
+            f"Position opened: {pending.contract.localSymbol} x{pending.quantity} "
+            f"@ ${fill_price:.2f} (SL: ${pending.stop_loss:.2f}, TP: ${pending.profit_target:.2f})"
+        )
+
+    def _cancel_pending_order(self, pending: PendingOrder, reason: str):
+        """Cancel a pending order and clean up."""
+        logger.info(f"Cancelling order for {pending.contract.localSymbol}: {reason}")
+
+        # Cancel entry order
+        self.ib.cancel_order(pending.entry_trade)
+
+        # Cancel bracket orders if they exist
+        if pending.stop_loss_trade:
+            self.ib.cancel_order(pending.stop_loss_trade)
+        if pending.take_profit_trade:
+            self.ib.cancel_order(pending.take_profit_trade)
+
+        self._remove_pending_order(pending, reason)
+
+    def _remove_pending_order(self, pending: PendingOrder, reason: str):
+        """Remove a pending order from tracking."""
+        self.pending_orders.remove(pending)
+
+        # Update database
+        if self.db and pending.db_id:
+            self.db.close_position(pending.db_id, 0, f'order_{reason}')
+
+        logger.info(f"Removed pending order: {pending.contract.localSymbol} ({reason})")
+
     def check_exits(self):
         """Check all positions for exit conditions"""
         # First, detect positions removed externally (manual sell)
@@ -533,10 +741,20 @@ class TradingEngine:
     
     def get_status(self) -> Dict:
         """Get current trading status"""
+        # Build pending order info with age
+        pending_info = []
+        for po in self.pending_orders:
+            age_sec = (datetime.now() - po.order_time).total_seconds()
+            pending_info.append(
+                f"{po.contract.localSymbol} x{po.quantity} @ ${po.entry_price:.2f} ({age_sec:.0f}s)"
+            )
+
         status = {
             'positions': len(self.positions),
+            'pending_orders': len(self.pending_orders),
             'max_positions': self.max_positions,
             'active_contracts': [f"{p.contract.localSymbol} x{p.quantity}" for p in self.positions],
+            'pending_contracts': pending_info,
             'account_value': self.ib.get_account_value(),
             'pnl': None,
         }
