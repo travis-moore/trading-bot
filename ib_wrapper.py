@@ -183,31 +183,44 @@ class IBWrapper:
             logger.error(f"Error getting option chain for {symbol}: {e}")
             return None, []
     
-    def find_option_contract(self, symbol: str, strike: float, expiry: str, 
-                            right: str = 'C', check_prices: bool = True) -> Optional[Contract]:
+    def find_option_contract(self, symbol: str, strike: float, expiry: str,
+                            right: str = 'C', check_prices: bool = True,
+                            quiet: bool = False) -> Optional[Contract]:
         """
         Find specific option contract that actually has market prices
-        
+
         Args:
             symbol: Underlying symbol
             strike: Strike price
             expiry: Expiration date (YYYYMMDD format)
             right: 'C' for call, 'P' for put
             check_prices: If True, verify the option has market prices (default: True)
-            
+            quiet: If True, suppress warnings for missing strikes (use when probing)
+
         Returns:
             Option contract or None if not found or not tradeable
         """
         try:
-            option = Option(symbol, expiry, strike, right, 'SMART')
-            contracts = self.ib.qualifyContracts(option)
-            
+            # Temporarily suppress ib_insync errors when probing for valid strikes
+            if quiet:
+                ib_logger = logging.getLogger('ib_insync')
+                old_level = ib_logger.level
+                ib_logger.setLevel(logging.CRITICAL)
+
+            try:
+                option = Option(symbol, expiry, strike, right, 'SMART')
+                contracts = self.ib.qualifyContracts(option)
+            finally:
+                if quiet:
+                    ib_logger.setLevel(old_level)
+
             # Check if contract was actually qualified
             if contracts and len(contracts) > 0:
                 qualified = contracts[0]
                 # A qualified contract will have localSymbol populated
                 if not qualified.localSymbol:
-                    logger.warning(f"Contract not qualified: {symbol} {expiry} ${strike} {right}")
+                    if not quiet:
+                        logger.warning(f"Contract not qualified: {symbol} {expiry} ${strike} {right}")
                     return None
                 
                 # Check if the option has actual market prices
@@ -232,7 +245,8 @@ class IBWrapper:
                 
                 return qualified
             else:
-                logger.warning(f"No contracts returned for: {symbol} {expiry} ${strike} {right}")
+                if not quiet:
+                    logger.warning(f"No contracts returned for: {symbol} {expiry} ${strike} {right}")
                 return None
                 
         except Exception as e:

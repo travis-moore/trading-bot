@@ -222,13 +222,14 @@ class TradingEngine:
         max_attempts = min(10, len(sorted_strikes))
         
         for i, strike in enumerate(sorted_strikes[:max_attempts]):
-            contract = self.ib.find_option_contract(symbol, strike, expiry, right)
-            
+            # Use quiet=True to suppress warnings when probing for valid strikes
+            contract = self.ib.find_option_contract(symbol, strike, expiry, right, quiet=True)
+
             # Check if contract was qualified (localSymbol gets populated)
             if contract and hasattr(contract, 'localSymbol') and contract.localSymbol:
                 logger.info(f"Selected option: {contract.localSymbol} (tried {i+1} strikes)")
                 return contract
-        
+
         logger.error(f"Could not find valid option contract for {symbol} near ${target_strike:.2f}")
         return None
     
