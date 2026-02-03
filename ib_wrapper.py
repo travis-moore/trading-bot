@@ -313,7 +313,7 @@ class IBWrapper:
 
             # Check if order was accepted
             status = trade.orderStatus.status
-            if status in ('Cancelled', 'Inactive', 'ApiCancelled'):
+            if status in ('Cancelled', 'Inactive', 'ApiCancelled', 'Rejected'):
                 logger.error(f"Order rejected/cancelled: {contract.localSymbol} status={status}")
                 return None
 
@@ -358,7 +358,7 @@ class IBWrapper:
 
             # Check if order was accepted
             status = trade.orderStatus.status
-            if status in ('Cancelled', 'Inactive', 'ApiCancelled'):
+            if status in ('Cancelled', 'Inactive', 'ApiCancelled', 'Rejected'):
                 logger.error(f"Order rejected/cancelled: {contract.localSymbol} status={status}")
                 return None
 
@@ -513,7 +513,7 @@ class IBWrapper:
 
             # Check entry order status
             status = entry_trade.orderStatus.status
-            if status in ('Cancelled', 'Inactive', 'ApiCancelled'):
+            if status in ('Cancelled', 'Inactive', 'ApiCancelled', 'Rejected'):
                 logger.error(f"Bracket entry order rejected: {status}")
                 return None
 

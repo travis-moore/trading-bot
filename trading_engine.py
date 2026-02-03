@@ -536,7 +536,7 @@ class TradingEngine:
             return
 
         # Check if entry order was cancelled externally
-        if status['status'] in ('Cancelled', 'Inactive', 'ApiCancelled'):
+        if status['status'] in ('Cancelled', 'Inactive', 'ApiCancelled', 'Rejected'):
             if filled_qty > 0:
                 # Partial fill before cancel - convert filled portion to position
                 logger.info(
