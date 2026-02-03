@@ -9,6 +9,8 @@ import logging
 import time
 import signal
 import sys
+import threading
+import select
 from datetime import datetime, time as dt_time
 from typing import Dict
 from zoneinfo import ZoneInfo
@@ -18,6 +20,14 @@ from ib_wrapper import IBWrapper
 from liquidity_analyzer import LiquidityAnalyzer, Pattern
 from trading_engine import TradingEngine, TradeDirection, Position
 from trade_db import TradeDatabase
+
+# Try to import strategies module
+try:
+    from strategies import StrategyManager
+    STRATEGIES_AVAILABLE = True
+except ImportError:
+    STRATEGIES_AVAILABLE = False
+    StrategyManager = None
 
 
 class SwingTradingBot:
@@ -38,7 +48,13 @@ class SwingTradingBot:
         self.analyzer = None
         self.engine = None
         self.db = None
+        self.strategy_manager = None  # StrategyManager instance if available
         self.tickers = {}  # symbol -> ticker mapping
+
+        # Command processing
+        self._command_thread = None
+        self._pending_command = None
+        self._command_lock = threading.Lock()
         
         # Statistics
         self.stats = {
@@ -102,13 +118,23 @@ class SwingTradingBot:
             db_path = self.config.get('database', {}).get('path', 'trading_bot.db')
             self.db = TradeDatabase(db_path)
 
+            # Initialize strategy manager if available
+            if STRATEGIES_AVAILABLE and StrategyManager is not None:
+                self.strategy_manager = StrategyManager(self.config)
+                loaded = self.strategy_manager.load_all_configured()
+                self.logger.info(f"Loaded {loaded} trading strategies")
+
             # Initialize trading engine
             engine_config = {
                 **self.config['risk_management'],
                 **self.config['trading_rules'],
                 **self.config['option_selection']
             }
-            self.engine = TradingEngine(self.ib, self.analyzer, engine_config, trade_db=self.db)
+            self.engine = TradingEngine(
+                self.ib, self.analyzer, engine_config,
+                trade_db=self.db,
+                strategy_manager=self.strategy_manager
+            )
 
             # Reconcile DB positions with IB account state
             self._reconcile_positions()
@@ -172,6 +198,9 @@ class SwingTradingBot:
                 if row['status'] == 'pending_fill':
                     self.db.update_position_status(row['id'], 'open')
 
+                # Get strategy (default to swing_trading for older records)
+                strategy = row['strategy'] if 'strategy' in row.keys() else 'swing_trading'
+
                 position = Position(
                     contract=contract,
                     entry_price=row['entry_price'],
@@ -183,6 +212,7 @@ class SwingTradingBot:
                     pattern=Pattern(row['pattern']),
                     db_id=row['id'],
                     order_ref=row['order_ref'],
+                    strategy_name=strategy,
                 )
                 self.engine.positions.append(position)
                 restored += 1
@@ -323,43 +353,281 @@ class SwingTradingBot:
             )
 
         self.logger.info("=" * 60)
-    
+
+    # =========================================================================
+    # Interactive Commands
+    # =========================================================================
+
+    def _start_command_thread(self):
+        """Start background thread to read user commands."""
+        self._command_thread = threading.Thread(target=self._command_reader, daemon=True)
+        self._command_thread.start()
+        self.logger.info("Command processor started. Type /help for available commands.")
+
+    def _command_reader(self):
+        """Background thread that reads commands from stdin."""
+        while self.running:
+            try:
+                # Use select on Unix, simple input on Windows
+                if sys.platform == 'win32':
+                    import msvcrt
+                    if msvcrt.kbhit():
+                        line = input()
+                        with self._command_lock:
+                            self._pending_command = line.strip()
+                    else:
+                        time.sleep(0.1)
+                else:
+                    # Unix - use select for non-blocking input
+                    readable, _, _ = select.select([sys.stdin], [], [], 0.1)
+                    if readable:
+                        line = sys.stdin.readline()
+                        if line:
+                            with self._command_lock:
+                                self._pending_command = line.strip()
+            except Exception:
+                time.sleep(0.1)
+
+    def _process_pending_command(self):
+        """Process any pending command from the user."""
+        with self._command_lock:
+            if self._pending_command is None:
+                return
+            command = self._pending_command
+            self._pending_command = None
+
+        if not command:
+            return
+
+        self.logger.info(f"Processing command: {command}")
+
+        if command == '/help':
+            self._cmd_help()
+        elif command == '/status':
+            self.print_status()
+        elif command == '/strategies':
+            self._cmd_strategies()
+        elif command == '/reload':
+            self._cmd_reload()
+        elif command.startswith('/reload '):
+            strategy_name = command.split(' ', 1)[1].strip()
+            self._cmd_reload(strategy_name)
+        elif command.startswith('/enable '):
+            strategy_name = command.split(' ', 1)[1].strip()
+            self._cmd_enable(strategy_name)
+        elif command.startswith('/disable '):
+            strategy_name = command.split(' ', 1)[1].strip()
+            self._cmd_disable(strategy_name)
+        elif command == '/discover':
+            self._cmd_discover()
+        elif command == '/pnl':
+            self._cmd_pnl()
+        elif command == '/quit' or command == '/stop':
+            self.logger.info("Stop command received")
+            self.running = False
+        else:
+            self.logger.warning(f"Unknown command: {command}. Type /help for available commands.")
+
+    def _cmd_help(self):
+        """Display available commands."""
+        help_text = """
+Available commands:
+  /help              - Show this help message
+  /status            - Show bot status
+  /strategies        - List all strategies and their status
+  /reload            - Reload all strategies from disk
+  /reload <name>     - Reload a specific strategy
+  /enable <name>     - Enable a strategy
+  /disable <name>    - Disable a strategy
+  /discover          - Discover and load new strategy files
+  /pnl               - Show P&L breakdown by strategy
+  /quit or /stop     - Stop the bot gracefully
+"""
+        print(help_text)
+
+    def _cmd_strategies(self):
+        """List all strategies and their status."""
+        if not self.strategy_manager:
+            self.logger.warning("Strategy manager not available")
+            return
+
+        status = self.strategy_manager.get_status()
+        print("\n" + "=" * 60)
+        print("TRADING STRATEGIES")
+        print("=" * 60)
+        print(f"Loaded: {status['loaded']}  |  Enabled: {status['enabled']}")
+        print("-" * 60)
+
+        for name, info in status['strategies'].items():
+            state = "✓ ENABLED" if info['enabled'] else "✗ disabled"
+            print(f"  {name:20} v{info['version']:8} {state}")
+            print(f"    {info['description']}")
+
+        # Show unloaded strategies
+        unloaded = self.strategy_manager.get_unloaded_strategies()
+        if unloaded:
+            print("-" * 60)
+            print("Available but not loaded:")
+            for name in unloaded:
+                print(f"  {name}")
+
+        print("=" * 60 + "\n")
+
+    def _cmd_reload(self, strategy_name=None):
+        """Reload strategies from disk."""
+        if not self.strategy_manager:
+            self.logger.warning("Strategy manager not available")
+            return
+
+        if strategy_name:
+            success = self.strategy_manager.reload_strategy(strategy_name)
+            if success:
+                self.logger.info(f"Successfully reloaded strategy: {strategy_name}")
+            else:
+                self.logger.error(f"Failed to reload strategy: {strategy_name}")
+        else:
+            results = self.strategy_manager.reload_all()
+            successes = sum(1 for v in results.values() if v)
+            failures = sum(1 for v in results.values() if not v)
+            self.logger.info(f"Reloaded strategies: {successes} succeeded, {failures} failed")
+
+    def _cmd_enable(self, strategy_name: str):
+        """Enable a strategy."""
+        if not self.strategy_manager:
+            self.logger.warning("Strategy manager not available")
+            return
+
+        if strategy_name not in self.strategy_manager.get_all_strategies():
+            # Try to load it first
+            if self.strategy_manager.load_strategy(strategy_name):
+                self.logger.info(f"Loaded and enabled strategy: {strategy_name}")
+            else:
+                self.logger.error(f"Strategy not found: {strategy_name}")
+            return
+
+        self.strategy_manager.enable_strategy(strategy_name)
+
+    def _cmd_disable(self, strategy_name: str):
+        """Disable a strategy."""
+        if not self.strategy_manager:
+            self.logger.warning("Strategy manager not available")
+            return
+
+        self.strategy_manager.disable_strategy(strategy_name)
+
+    def _cmd_discover(self):
+        """Discover and optionally load new strategy files."""
+        if not self.strategy_manager:
+            self.logger.warning("Strategy manager not available")
+            return
+
+        available = self.strategy_manager.discover_strategies()
+        loaded = set(self.strategy_manager.get_all_strategies().keys())
+        new_strategies = available - loaded
+
+        if not new_strategies:
+            self.logger.info("No new strategy files found")
+            return
+
+        print(f"\nFound {len(new_strategies)} new strategy file(s):")
+        for name in new_strategies:
+            print(f"  - {name}")
+
+        # Load any that are enabled in config
+        loaded_count = self.strategy_manager.load_new_strategies()
+        if loaded_count > 0:
+            self.logger.info(f"Auto-loaded {loaded_count} new strategies (enabled in config)")
+        else:
+            print("\nTo load a strategy, use: /enable <name>")
+
+    def _cmd_pnl(self):
+        """Show P&L breakdown by strategy."""
+        if not self.db:
+            self.logger.warning("Database not available")
+            return
+
+        pnl_by_strategy = self.db.get_pnl_by_strategy()
+
+        print("\n" + "=" * 70)
+        print("P&L BY STRATEGY")
+        print("=" * 70)
+
+        if not pnl_by_strategy:
+            print("  No completed trades yet")
+        else:
+            print(f"  {'Strategy':<20} {'Trades':>8} {'W/L':>10} {'Total P&L':>12} {'Avg P&L':>10}")
+            print("-" * 70)
+            for strategy, stats in pnl_by_strategy.items():
+                wl = f"{stats['wins']}/{stats['losses']}"
+                print(
+                    f"  {strategy:<20} {stats['total_trades']:>8} {wl:>10} "
+                    f"${stats['total_pnl']:>+10,.2f} ${stats['avg_pnl']:>+8,.2f}"
+                )
+
+        # Also show total
+        total = self.db.get_bot_pnl_summary()
+        print("-" * 70)
+        wl_total = f"{total['wins']}/{total['losses']}"
+        print(
+            f"  {'TOTAL':<20} {total['total_trades']:>8} {wl_total:>10} "
+            f"${total['total_pnl']:>+10,.2f}"
+        )
+        print("=" * 70 + "\n")
+
     def run(self):
         """Main bot loop"""
         if not self.initialize():
             self.logger.error("Failed to initialize bot")
             return
-        
+
         self.running = True
         self.stats['start_time'] = datetime.now()
-        
+
         self.logger.info("=" * 60)
         self.logger.info("SWING TRADING BOT STARTED")
         self.logger.info("=" * 60)
         self.logger.info(f"Monitoring symbols: {', '.join(self.config['symbols'])}")
         self.logger.info(f"Paper trading: {self.config['operation']['enable_paper_trading']}")
+        if self.strategy_manager:
+            status = self.strategy_manager.get_status()
+            self.logger.info(f"Strategies: {status['enabled']} enabled / {status['loaded']} loaded")
         self.logger.info("=" * 60)
-        
+
+        # Start command processing thread
+        self._start_command_thread()
+
         scan_interval = self.config['operation']['scan_interval']
         status_counter = 0
-        
+        discovery_counter = 0
+
         try:
             while self.running:
+                # Process any pending user commands
+                self._process_pending_command()
+
                 # Scan for signals
                 self.scan_for_signals()
-                
+
                 # Check open positions
                 self.check_positions()
-                
+
                 # Print status every 10 scans
                 status_counter += 1
                 if status_counter >= 10:
                     self.print_status()
                     status_counter = 0
-                
+
+                # Auto-discover new strategies every 60 scans (~5 min at 5s interval)
+                discovery_counter += 1
+                if discovery_counter >= 60 and self.strategy_manager:
+                    loaded = self.strategy_manager.load_new_strategies()
+                    if loaded > 0:
+                        self.logger.info(f"Auto-discovered and loaded {loaded} new strategies")
+                    discovery_counter = 0
+
                 # Wait for next scan
                 time.sleep(scan_interval)
-                
+
         except KeyboardInterrupt:
             self.logger.info("Keyboard interrupt received")
         except Exception as e:

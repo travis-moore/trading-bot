@@ -366,6 +366,9 @@ class TradingEngine:
         profit_target = entry_price * (1 + self.profit_target_pct)
         stop_loss = entry_price * (1 - self.stop_loss_pct)
 
+        # Get strategy name from signal metadata (if using strategy system)
+        strategy_name = getattr(signal, 'metadata', {}).get('strategy', 'swing_trading')
+
         # Generate order tag and persist before placing order (crash safety)
         order_ref = None
         db_id = None
@@ -385,7 +388,8 @@ class TradingEngine:
                 'direction': direction.value,
                 'stop_loss': stop_loss,
                 'profit_target': profit_target,
-                'pattern': signal.pattern.value,
+                'pattern': signal.pattern.value if hasattr(signal.pattern, 'value') else str(signal.pattern),
+                'strategy': strategy_name,
                 'entry_order_id': None,
                 'order_ref': order_ref,
                 'status': 'pending_fill',
@@ -419,6 +423,7 @@ class TradingEngine:
             pattern=signal.pattern,
             db_id=db_id,
             order_ref=order_ref,
+            strategy_name=strategy_name,
         )
 
         self.positions.append(position)

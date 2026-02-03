@@ -8,13 +8,16 @@ Supports dynamic plugin loading from the strategies directory.
 import importlib
 import importlib.util
 import logging
-import os
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Type
+from typing import Dict, List, Optional, Any, Type, Set
 
 from .base_strategy import BaseStrategy, StrategySignal
 
 logger = logging.getLogger(__name__)
+
+# Files that should not be treated as strategies
+EXCLUDED_FILES = {'__init__.py', 'base_strategy.py', 'strategy_manager.py', 'template_strategy.py'}
 
 
 class StrategyManager:
@@ -294,6 +297,127 @@ class StrategyManager:
                 for name, strategy in self._strategies.items()
             }
         }
+
+    # =========================================================================
+    # Dynamic Loading / Hot Reload
+    # =========================================================================
+
+    def reload_strategy(self, name: str) -> bool:
+        """
+        Hot-reload a strategy by name (re-imports the module from disk).
+
+        Args:
+            name: Strategy identifier
+
+        Returns:
+            True if reload succeeded, False otherwise
+        """
+        if name not in self._strategies:
+            logger.warning(f"Cannot reload '{name}' - not currently loaded")
+            return False
+
+        # Remember enabled state
+        was_enabled = self._enabled.get(name, True)
+        strategy_config = self._get_strategy_config(name)
+
+        try:
+            # For built-in strategies, reload via importlib
+            if name in self.BUILTIN_STRATEGIES:
+                module_path = self.BUILTIN_STRATEGIES[name]
+                module_name, class_name = module_path.rsplit('.', 1)
+
+                # Remove from sys.modules to force fresh import
+                if module_name in sys.modules:
+                    del sys.modules[module_name]
+
+                module = importlib.import_module(module_name)
+                strategy_class = getattr(module, class_name)
+                new_strategy = strategy_class(strategy_config)
+            else:
+                # File-based strategy - reload from file
+                new_strategy = self._load_from_file(name, strategy_config)
+
+            if new_strategy is None:
+                logger.error(f"Failed to reload strategy: {name}")
+                return False
+
+            # Replace the old strategy
+            self._strategies[name] = new_strategy
+            self._enabled[name] = was_enabled
+
+            logger.info(f"Reloaded strategy: {new_strategy}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error reloading strategy {name}: {e}")
+            return False
+
+    def reload_all(self) -> Dict[str, bool]:
+        """
+        Reload all currently loaded strategies.
+
+        Returns:
+            Dict mapping strategy name to reload success (True/False)
+        """
+        results = {}
+        for name in list(self._strategies.keys()):
+            results[name] = self.reload_strategy(name)
+        return results
+
+    def discover_strategies(self) -> Set[str]:
+        """
+        Discover strategy files in the strategies directory that aren't loaded.
+
+        Returns:
+            Set of strategy names (filenames without .py) that could be loaded
+        """
+        strategies_dir = Path(__file__).parent
+        available: Set[str] = set()
+
+        for py_file in strategies_dir.glob("*.py"):
+            name = py_file.stem
+            if py_file.name not in EXCLUDED_FILES:
+                available.add(name)
+
+        # Also include built-in strategies
+        available.update(self.BUILTIN_STRATEGIES.keys())
+
+        return available
+
+    def get_unloaded_strategies(self) -> Set[str]:
+        """
+        Get strategies that are available but not currently loaded.
+
+        Returns:
+            Set of strategy names that can be loaded
+        """
+        available = self.discover_strategies()
+        loaded = set(self._strategies.keys())
+        return available - loaded
+
+    def load_new_strategies(self) -> int:
+        """
+        Auto-discover and load any new strategy files not yet loaded.
+
+        Returns:
+            Number of new strategies loaded
+        """
+        unloaded = self.get_unloaded_strategies()
+        loaded_count = 0
+
+        for name in unloaded:
+            # Skip template
+            if name == 'template':
+                continue
+
+            config = self._get_strategy_config(name)
+            # Only auto-load if explicitly enabled in config
+            if config.get('enabled', False):
+                if self.load_strategy(name, config=config):
+                    loaded_count += 1
+                    logger.info(f"Auto-loaded new strategy: {name}")
+
+        return loaded_count
 
     def __repr__(self) -> str:
         enabled = sum(1 for v in self._enabled.values() if v)

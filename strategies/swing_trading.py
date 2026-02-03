@@ -129,8 +129,32 @@ class SwingTradingStrategy(BaseStrategy):
         context = context or {}
         symbol = context.get('symbol', 'UNKNOWN')
 
+        # Analyze order book for support/resistance
+        analysis = self._analyze_book(ticker)
+
+        # Format support/resistance levels for logging
+        support_str = f"${analysis['support'][0].price:.2f}" if analysis['support'] else "none"
+        resistance_str = f"${analysis['resistance'][0].price:.2f}" if analysis['resistance'] else "none"
+
         # Detect pattern from order book
-        pattern_result = self._detect_pattern(ticker, current_price, symbol)
+        pattern_result = self._detect_pattern(
+            ticker, current_price, symbol, analysis=analysis
+        )
+
+        # Determine pattern name and confidence for logging
+        if pattern_result is None:
+            pattern_name = "consolidation"
+            confidence_val = 0.0
+        else:
+            pattern, confidence_val, price_level, imbalance, metadata = pattern_result
+            pattern_name = pattern.value
+
+        # Log analysis output
+        logger.info(
+            f"strategy: {self.name} ({symbol}) - "
+            f"price: ${current_price:.2f}, support: {support_str}, resistance: {resistance_str}, "
+            f"pattern: {pattern_name}, confidence: {confidence_val:.2f}"
+        )
 
         if pattern_result is None:
             return None
@@ -165,16 +189,23 @@ class SwingTradingStrategy(BaseStrategy):
         )
 
     def _detect_pattern(self, ticker: Any, current_price: float,
-                        symbol: str) -> Optional[tuple]:
+                        symbol: str, analysis: Optional[Dict] = None) -> Optional[tuple]:
         """
         Detect trading pattern from order book.
+
+        Args:
+            ticker: ib_insync Ticker object
+            current_price: Current stock price
+            symbol: Stock symbol
+            analysis: Optional pre-computed analysis from _analyze_book()
 
         Returns:
             Tuple of (pattern, confidence, price_level, imbalance, metadata)
             or None if only consolidation detected
         """
-        # Analyze order book
-        analysis = self._analyze_book(ticker)
+        # Use pre-computed analysis or analyze now
+        if analysis is None:
+            analysis = self._analyze_book(ticker)
 
         # Check for support zone interaction
         for zone in analysis['support']:

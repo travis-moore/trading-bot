@@ -44,6 +44,7 @@ class TradeDatabase:
                 stop_loss       REAL NOT NULL,
                 profit_target   REAL NOT NULL,
                 pattern         TEXT NOT NULL,
+                strategy        TEXT NOT NULL DEFAULT 'swing_trading',
                 entry_order_id  INTEGER,
                 order_ref       TEXT NOT NULL,
                 status          TEXT NOT NULL DEFAULT 'open',
@@ -62,6 +63,7 @@ class TradeDatabase:
                 right           TEXT NOT NULL,
                 direction       TEXT NOT NULL,
                 pattern         TEXT NOT NULL,
+                strategy        TEXT NOT NULL DEFAULT 'swing_trading',
                 quantity        INTEGER NOT NULL,
                 entry_price     REAL NOT NULL,
                 entry_time      TEXT NOT NULL,
@@ -77,6 +79,27 @@ class TradeDatabase:
             );
         """)
         self.conn.commit()
+        self._migrate_add_strategy_column()
+
+    def _migrate_add_strategy_column(self):
+        """Add strategy column to existing tables if missing (migration)."""
+        cursor = self.conn.execute("PRAGMA table_info(positions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if 'strategy' not in columns:
+            logger.info("Migrating: adding strategy column to positions table")
+            self.conn.execute(
+                "ALTER TABLE positions ADD COLUMN strategy TEXT NOT NULL DEFAULT 'swing_trading'"
+            )
+            self.conn.commit()
+
+        cursor = self.conn.execute("PRAGMA table_info(trade_history)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if 'strategy' not in columns:
+            logger.info("Migrating: adding strategy column to trade_history table")
+            self.conn.execute(
+                "ALTER TABLE trade_history ADD COLUMN strategy TEXT NOT NULL DEFAULT 'swing_trading'"
+            )
+            self.conn.commit()
 
     def close(self):
         """Close the database connection."""
@@ -92,20 +115,25 @@ class TradeDatabase:
 
         Args:
             data: dict with keys matching positions table columns
+                  (strategy defaults to 'swing_trading' if not provided)
 
         Returns:
             The new row id.
         """
+        # Default strategy if not provided
+        if 'strategy' not in data:
+            data['strategy'] = 'swing_trading'
+
         cursor = self.conn.execute("""
             INSERT INTO positions (
                 symbol, local_symbol, con_id, strike, expiry, right, exchange,
                 entry_price, entry_time, quantity, direction,
-                stop_loss, profit_target, pattern,
+                stop_loss, profit_target, pattern, strategy,
                 entry_order_id, order_ref, status
             ) VALUES (
                 :symbol, :local_symbol, :con_id, :strike, :expiry, :right, :exchange,
                 :entry_price, :entry_time, :quantity, :direction,
-                :stop_loss, :profit_target, :pattern,
+                :stop_loss, :profit_target, :pattern, :strategy,
                 :entry_order_id, :order_ref, :status
             )
         """, data)
@@ -170,19 +198,22 @@ class TradeDatabase:
         exit_time = datetime.now().isoformat()
 
         try:
+            # Get strategy (default to swing_trading for older records without it)
+            strategy = row['strategy'] if 'strategy' in row.keys() else 'swing_trading'
+
             self.conn.execute("BEGIN")
             self.conn.execute("""
                 INSERT INTO trade_history (
                     position_id, symbol, local_symbol, con_id, strike, expiry, right,
-                    direction, pattern, quantity,
+                    direction, pattern, strategy, quantity,
                     entry_price, entry_time, entry_order_id, order_ref,
                     exit_price, exit_time, exit_reason, exit_order_id,
                     pnl, pnl_pct
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 position_id, row['symbol'], row['local_symbol'], row['con_id'],
                 row['strike'], row['expiry'], row['right'],
-                row['direction'], row['pattern'], row['quantity'],
+                row['direction'], row['pattern'], strategy, row['quantity'],
                 row['entry_price'], row['entry_time'], row['entry_order_id'],
                 row['order_ref'],
                 exit_price, exit_time, exit_reason, exit_order_id,
@@ -233,6 +264,35 @@ class TradeDatabase:
             'losses': row['losses'] or 0,
             'total_pnl': row['total_pnl'] or 0.0,
         }
+
+    def get_pnl_by_strategy(self) -> Dict[str, Dict[str, Any]]:
+        """Return P&L summary grouped by strategy."""
+        cursor = self.conn.execute("""
+            SELECT
+                strategy,
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
+                COALESCE(SUM(pnl), 0) as total_pnl,
+                COALESCE(AVG(pnl), 0) as avg_pnl,
+                COALESCE(AVG(pnl_pct), 0) as avg_pnl_pct
+            FROM trade_history
+            WHERE exit_reason NOT IN ('manual_close', 'reconciliation_not_found')
+              AND pnl IS NOT NULL
+            GROUP BY strategy
+            ORDER BY total_pnl DESC
+        """)
+        result = {}
+        for row in cursor.fetchall():
+            result[row['strategy']] = {
+                'total_trades': row['total_trades'] or 0,
+                'wins': row['wins'] or 0,
+                'losses': row['losses'] or 0,
+                'total_pnl': row['total_pnl'] or 0.0,
+                'avg_pnl': row['avg_pnl'] or 0.0,
+                'avg_pnl_pct': row['avg_pnl_pct'] or 0.0,
+            }
+        return result
 
     # --- Order Tagging ---
 
