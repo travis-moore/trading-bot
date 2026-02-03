@@ -1,17 +1,30 @@
 """
 Trading Engine
-Implements rule-based trading logic for options based on liquidity patterns
+Implements rule-based trading logic for options based on liquidity patterns.
+
+Supports both legacy LiquidityAnalyzer integration and new plugin-based strategies.
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union, Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 
 from ib_insync import Contract
 from ib_wrapper import IBWrapper
+
+# Legacy imports for backward compatibility
 from liquidity_analyzer import LiquidityAnalyzer, Pattern, PatternSignal
+
+# New strategy system imports
+try:
+    from strategies import StrategyManager, StrategySignal
+    STRATEGIES_AVAILABLE = True
+except ImportError:
+    STRATEGIES_AVAILABLE = False
+    StrategyManager = None
+    StrategySignal = None
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +38,7 @@ class TradeDirection(Enum):
 
 @dataclass
 class TradeRule:
-    """Rules for entering trades"""
+    """Rules for entering trades (legacy system)"""
     pattern: Pattern
     direction: TradeDirection
     min_confidence: float
@@ -42,48 +55,86 @@ class Position:
     direction: TradeDirection
     stop_loss: float
     profit_target: float
-    pattern: Pattern
+    pattern: Union[Pattern, str]  # Pattern enum or string pattern name
     db_id: Optional[int] = None
     order_ref: Optional[str] = None
+    strategy_name: Optional[str] = None  # Which strategy opened this position
 
 
 class TradingEngine:
     """
-    Main trading engine that orchestrates pattern detection and trade execution
+    Main trading engine that orchestrates pattern detection and trade execution.
+
+    Supports two modes:
+    1. Legacy mode: Uses LiquidityAnalyzer directly
+    2. Strategy mode: Uses StrategyManager with plugin strategies
+
+    The mode is determined by whether a StrategyManager is provided.
     """
-    
+
     def __init__(self, ib_wrapper: IBWrapper, analyzer: LiquidityAnalyzer, config: Dict,
-                 trade_db=None):
+                 trade_db=None, strategy_manager=None):
         """
-        Initialize trading engine
+        Initialize trading engine.
 
         Args:
             ib_wrapper: IB API wrapper
-            analyzer: Liquidity analyzer
+            analyzer: Liquidity analyzer (used in legacy mode)
             config: Trading configuration
             trade_db: Optional TradeDatabase for persistence
+            strategy_manager: Optional StrategyManager for plugin-based strategies
         """
         self.ib = ib_wrapper
         self.analyzer = analyzer
         self.config = config
         self.db = trade_db
-        
+        self.strategy_manager = strategy_manager
+
         # Active positions
         self.positions: List[Position] = []
-        
-        # Trading rules
+
+        # Trading rules (legacy mode)
         self.rules = self._setup_rules()
-        
+
         # Risk management
         self.max_position_size = config.get('max_position_size', 1000)
         self.max_positions = config.get('max_positions', 3)
         self.position_size_pct = config.get('position_size_pct', 0.02)  # 2% of account
-        
+
         # Exit rules
         self.profit_target_pct = config.get('profit_target_pct', 0.5)  # 50%
         self.stop_loss_pct = config.get('stop_loss_pct', 0.3)  # 30%
         self.max_hold_days = config.get('max_hold_days', 30)
-        
+
+    @property
+    def using_strategies(self) -> bool:
+        """Check if engine is using strategy manager."""
+        return self.strategy_manager is not None and STRATEGIES_AVAILABLE
+
+    def get_signal(self, ticker, current_price: float, symbol: str):
+        """
+        Get trading signal using strategy manager or legacy analyzer.
+
+        Args:
+            ticker: ib_insync Ticker with market data
+            current_price: Current stock price
+            symbol: Stock symbol
+
+        Returns:
+            StrategySignal (new) or PatternSignal (legacy), or None
+        """
+        if self.using_strategies and self.strategy_manager is not None:
+            # Use strategy manager
+            context = {
+                'symbol': symbol,
+                'positions': self.positions,
+                'account_value': self.ib.get_account_value(),
+            }
+            return self.strategy_manager.get_best_signal(ticker, current_price, context)
+        else:
+            # Legacy: use analyzer directly
+            return self.analyzer.detect_pattern(ticker, current_price)
+
     def _setup_rules(self) -> List[TradeRule]:
         """
         Setup trading rules from configuration
@@ -120,21 +171,36 @@ class TradingEngine:
             ),
         ]
     
-    def evaluate_signal(self, signal: PatternSignal) -> Optional[TradeDirection]:
+    def evaluate_signal(self, signal) -> Optional[TradeDirection]:
         """
-        Evaluate if signal meets trading rules
-        
+        Evaluate if signal meets trading rules.
+
+        Supports both legacy PatternSignal and new StrategySignal.
+
         Args:
-            signal: Pattern signal from analyzer
-            
+            signal: PatternSignal (legacy) or StrategySignal (new)
+
         Returns:
             Trade direction or None
         """
+        # Handle new StrategySignal (already has direction and confidence filtering)
+        if STRATEGIES_AVAILABLE and StrategySignal is not None:
+            if hasattr(signal, 'direction') and hasattr(signal, 'pattern_name'):
+                # This is a StrategySignal - it already passed confidence check
+                direction = signal.direction
+                if direction.value == "long_call":
+                    return TradeDirection.LONG_CALL
+                elif direction.value == "long_put":
+                    return TradeDirection.LONG_PUT
+                else:
+                    return None
+
+        # Legacy PatternSignal handling
         for rule in self.rules:
             if rule.pattern == signal.pattern and signal.confidence >= rule.min_confidence:
                 logger.info(f"Signal matches rule: {rule.entry_condition}")
                 return rule.direction
-        
+
         return None
     
     def calculate_position_size(self, option_price: float) -> int:

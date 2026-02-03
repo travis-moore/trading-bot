@@ -505,6 +505,98 @@ class IntegrationTestSuite:
             engine.positions.clear()
 
     # ========================================================================
+    # PHASE 5B: STRATEGY SYSTEM
+    # ========================================================================
+
+    def phase_strategies(self):
+        """Test plugin-based strategy system."""
+        print_header("PHASE 5B: STRATEGY SYSTEM")
+
+        # Test imports
+        try:
+            from strategies import StrategyManager, SwingTradingStrategy
+            print_result("Import strategies", True)
+            self.record(passed=True)
+        except ImportError as e:
+            print_result("Import strategies", False, str(e))
+            self.record(passed=False)
+            return
+
+        # Test SwingTradingStrategy directly
+        try:
+            strategy = SwingTradingStrategy()
+            if strategy.name == "swing_trading":
+                print_result("SwingTradingStrategy", True,
+                            f"v{strategy.version}: {strategy.description[:40]}...")
+                self.record(passed=True)
+            else:
+                print_result("SwingTradingStrategy", False, f"Wrong name: {strategy.name}")
+                self.record(passed=False)
+        except Exception as e:
+            print_result("SwingTradingStrategy", False, str(e))
+            self.record(passed=False)
+            return
+
+        # Test strategy config
+        config = strategy.get_default_config()
+        if 'liquidity_threshold' in config and 'imbalance_threshold' in config:
+            print_result("Strategy config", True,
+                        f"{len(config)} parameters")
+            self.record(passed=True)
+        else:
+            print_result("Strategy config", False, "Missing expected parameters")
+            self.record(passed=False)
+
+        # Test StrategyManager
+        try:
+            manager = StrategyManager({})
+            loaded = manager.load_strategy('swing_trading')
+            if loaded and manager.is_enabled('swing_trading'):
+                print_result("StrategyManager", True, "Loaded swing_trading")
+                self.record(passed=True)
+            else:
+                print_result("StrategyManager", False, "Failed to load strategy")
+                self.record(passed=False)
+        except Exception as e:
+            print_result("StrategyManager", False, str(e))
+            self.record(passed=False)
+
+        # Test strategy analysis (if we have market data)
+        if self.test_contract and self.ib:
+            symbol = TEST_CONFIG['test_symbol']
+            ticker = self.ib.subscribe_market_depth(symbol, num_rows=50)
+
+            if ticker:
+                self.ib.ib.sleep(2)
+                price = self.ib.get_stock_price(symbol)
+
+                if price:
+                    try:
+                        signal = strategy.analyze(ticker, price, {'symbol': symbol})
+                        # Signal can be None (no opportunity) - that's OK
+                        if signal is None:
+                            print_result("Strategy analyze", True, "No signal (consolidation)")
+                        else:
+                            print_result("Strategy analyze", True,
+                                        f"{signal.pattern_name} @ {signal.confidence:.2f}")
+                        self.record(passed=True)
+                    except Exception as e:
+                        print_result("Strategy analyze", False, str(e))
+                        self.record(passed=False)
+                else:
+                    print_skip("Strategy analyze", "No price data")
+                    self.record(skipped=True)
+
+                if ticker.contract:
+                    self.ib.cancel_market_depth(ticker.contract)
+            else:
+                print_skip("Strategy analyze", "No market depth")
+                self.record(skipped=True)
+        else:
+            print_skip("Strategy analyze", "No test contract")
+            self.record(skipped=True)
+
+    # ========================================================================
     # PHASE 6: ORDER PLACEMENT (Interactive)
     # ========================================================================
 
@@ -831,6 +923,9 @@ class IntegrationTestSuite:
 
             # Phase 5: Trading engine
             self.phase_trading_engine()
+
+            # Phase 5B: Strategy system
+            self.phase_strategies()
 
             # Phase 6: Orders (paper only)
             self.phase_orders(is_paper)
