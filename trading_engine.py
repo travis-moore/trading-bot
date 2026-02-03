@@ -527,22 +527,44 @@ class TradingEngine:
 
     def _check_single_pending_order(self, pending: PendingOrder):
         """Check and handle a single pending order."""
-        # Check if entry order filled
+        status = self.ib.get_order_status(pending.entry_trade)
+        filled_qty = int(status.get('filled', 0))
+
+        # Check if entry order fully filled
         if self.ib.is_order_filled(pending.entry_trade):
-            self._convert_pending_to_position(pending)
+            self._convert_pending_to_position(pending, filled_qty)
             return
 
-        # Check if entry order was cancelled
-        status = self.ib.get_order_status(pending.entry_trade)
+        # Check if entry order was cancelled externally
         if status['status'] in ('Cancelled', 'Inactive', 'ApiCancelled'):
-            logger.info(f"Order cancelled for {pending.contract.localSymbol}")
-            self._remove_pending_order(pending, 'cancelled')
+            if filled_qty > 0:
+                # Partial fill before cancel - convert filled portion to position
+                logger.info(
+                    f"Order cancelled with partial fill: {pending.contract.localSymbol} "
+                    f"({filled_qty}/{pending.quantity} filled)"
+                )
+                self._convert_pending_to_position(pending, filled_qty)
+            else:
+                logger.info(f"Order cancelled for {pending.contract.localSymbol}")
+                self._remove_pending_order(pending, 'cancelled')
             return
 
         # Check for timeout
         age_seconds = (datetime.now() - pending.order_time).total_seconds()
         if age_seconds > self.order_timeout_seconds:
-            # Get current market price to check drift
+            # If partially filled, convert filled portion regardless of drift
+            if filled_qty > 0:
+                logger.info(
+                    f"Order timeout with partial fill: {pending.contract.localSymbol} "
+                    f"({filled_qty}/{pending.quantity} filled) - keeping filled portion"
+                )
+                # Cancel remaining unfilled portion
+                self.ib.cancel_order(pending.entry_trade)
+                # Convert the filled portion to a position
+                self._convert_pending_to_position(pending, filled_qty)
+                return
+
+            # No fills yet - check price drift
             price_data = self.ib.get_option_price(pending.contract)
             if price_data:
                 bid, ask, last = price_data
@@ -574,20 +596,43 @@ class TradingEngine:
                 )
                 self._cancel_pending_order(pending, 'timeout_no_price')
 
-    def _convert_pending_to_position(self, pending: PendingOrder):
-        """Convert a filled pending order to an active position."""
-        logger.info(f"Order filled: {pending.contract.localSymbol} x{pending.quantity}")
+    def _convert_pending_to_position(self, pending: PendingOrder, filled_qty: Optional[int] = None):
+        """
+        Convert a filled (or partially filled) pending order to an active position.
+
+        Args:
+            pending: The pending order to convert
+            filled_qty: Number of contracts filled. If None, uses pending.quantity (full fill).
+        """
+        # Determine actual filled quantity
+        if filled_qty is None:
+            status = self.ib.get_order_status(pending.entry_trade)
+            filled_qty = int(status.get('filled', pending.quantity))
+
+        if filled_qty <= 0:
+            logger.warning(f"Cannot convert to position: no fills for {pending.contract.localSymbol}")
+            self._remove_pending_order(pending, 'no_fills')
+            return
+
+        is_partial = filled_qty < pending.quantity
+        if is_partial:
+            logger.info(
+                f"Partial fill: {pending.contract.localSymbol} "
+                f"{filled_qty}/{pending.quantity} contracts filled"
+            )
+        else:
+            logger.info(f"Order filled: {pending.contract.localSymbol} x{filled_qty}")
 
         # Get actual fill price
         status = self.ib.get_order_status(pending.entry_trade)
         fill_price = status['avg_fill_price'] if status['avg_fill_price'] > 0 else pending.entry_price
 
-        # Create position
+        # Create position with actual filled quantity
         position = Position(
             contract=pending.contract,
             entry_price=fill_price,
             entry_time=datetime.now(),
-            quantity=pending.quantity,
+            quantity=filled_qty,
             direction=pending.direction,
             stop_loss=pending.stop_loss,
             profit_target=pending.profit_target,
@@ -605,12 +650,15 @@ class TradingEngine:
         # Update database
         if self.db and pending.db_id:
             self.db.update_position_status(pending.db_id, 'open')
-            # Update entry price if different from limit price
+            # Update quantity in DB if partial fill
+            if is_partial:
+                self.db.update_position_quantity(pending.db_id, filled_qty)
+            # Log if fill price differs from limit price
             if abs(fill_price - pending.entry_price) > 0.01:
                 logger.info(f"Fill price ${fill_price:.2f} differs from limit ${pending.entry_price:.2f}")
 
         logger.info(
-            f"Position opened: {pending.contract.localSymbol} x{pending.quantity} "
+            f"Position opened: {pending.contract.localSymbol} x{filled_qty} "
             f"@ ${fill_price:.2f} (SL: ${pending.stop_loss:.2f}, TP: ${pending.profit_target:.2f})"
         )
 

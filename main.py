@@ -77,18 +77,30 @@ class SwingTradingBot:
     def _setup_logging(self):
         """Setup logging configuration"""
         log_level = self.config['operation'].get('log_level', 'INFO')
-        
-        logging.basicConfig(
-            level=getattr(logging, log_level),
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler('trading_bot.log'),
-                logging.StreamHandler(sys.stdout)
-            ]
-        )
+        log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
-        # Suppress noisy ib_insync portfolio update messages
-        logging.getLogger('ib_insync.wrapper').setLevel(logging.WARNING)
+        # File handler - captures everything including verbose ib_insync messages
+        file_handler = logging.FileHandler('trading_bot.log')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(log_format))
+
+        # Console handler - filters out noisy ib_insync messages
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(getattr(logging, log_level))
+        console_handler.setFormatter(logging.Formatter(log_format))
+
+        # Filter to exclude ib_insync verbose messages from console
+        class IbInsyncFilter(logging.Filter):
+            def filter(self, record):
+                return not record.name.startswith('ib_insync')
+
+        console_handler.addFilter(IbInsyncFilter())
+
+        # Configure root logger
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
+        root_logger.addHandler(file_handler)
+        root_logger.addHandler(console_handler)
 
         self.logger = logging.getLogger(__name__)
     
