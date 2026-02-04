@@ -32,8 +32,10 @@ class StrategyManager:
     """
 
     # Built-in strategies that are always available
+    # Maps strategy type name -> module.ClassName
     BUILTIN_STRATEGIES = {
         'swing_trading': 'strategies.swing_trading.SwingTradingStrategy',
+        'scalping': 'strategies.scalping.ScalpingStrategy',
     }
 
     def __init__(self, config: Dict[str, Any] = None):
@@ -42,66 +44,97 @@ class StrategyManager:
 
         Args:
             config: Configuration dict, typically from config.yaml.
-                   Expected structure:
+                   Expected structure (supports multiple instances of same type):
                    {
                        'strategies': {
-                           'swing_trading': {
+                           'swing_conservative': {
+                               'type': 'swing_trading',  # Strategy type
                                'enabled': True,
-                               'liquidity_threshold': 1000,
+                               'zone_proximity_pct': 0.005,
+                               ...
+                           },
+                           'swing_aggressive': {
+                               'type': 'swing_trading',  # Same type, different config
+                               'enabled': True,
+                               'zone_proximity_pct': 0.003,
+                               ...
+                           },
+                           # Backward compatible: if 'type' not specified, instance name = type
+                           'scalping': {
+                               'enabled': True,
+                               'imbalance_entry_threshold': 0.7,
                                ...
                            }
                        }
                    }
         """
         self._config = config or {}
-        self._strategies: Dict[str, BaseStrategy] = {}
+        self._strategies: Dict[str, BaseStrategy] = {}  # instance_name -> strategy
         self._enabled: Dict[str, bool] = {}
+        self._instance_types: Dict[str, str] = {}  # instance_name -> strategy_type
 
-    def load_strategy(self, name: str, strategy_class: Type[BaseStrategy] = None,
-                      config: Dict[str, Any] = None) -> Optional[BaseStrategy]:
+    def load_strategy(self, instance_name: str,
+                      strategy_class: Optional[Type[BaseStrategy]] = None,
+                      config: Optional[Dict[str, Any]] = None,
+                      strategy_type: Optional[str] = None) -> Optional[BaseStrategy]:
         """
-        Load a strategy by name or class.
+        Load a strategy by instance name and type.
+
+        Supports multiple instances of the same strategy type with different configs.
 
         Args:
-            name: Strategy identifier
-            strategy_class: Optional class to instantiate (for built-in or direct loading)
+            instance_name: Unique identifier for this strategy instance
+            strategy_class: Optional class to instantiate (for direct loading)
             config: Strategy-specific configuration (overrides defaults)
+            strategy_type: Type of strategy to load (e.g., 'swing_trading', 'scalping').
+                          If None, looks for 'type' in config, or uses instance_name.
 
         Returns:
             Loaded strategy instance or None if failed
+
+        Example:
+            # Load two swing trading instances with different configs
+            manager.load_strategy('swing_conservative', strategy_type='swing_trading',
+                                  config={'zone_proximity_pct': 0.005})
+            manager.load_strategy('swing_aggressive', strategy_type='swing_trading',
+                                  config={'zone_proximity_pct': 0.003})
         """
         try:
             # Get strategy-specific config
-            strategy_config = config or self._get_strategy_config(name)
+            strategy_config = config or self._get_strategy_config(instance_name)
+
+            # Determine strategy type: explicit param > config 'type' field > instance_name
+            resolved_type: str = strategy_type or strategy_config.get('type', instance_name)
 
             # If class provided, use it directly
             if strategy_class is not None:
                 strategy = strategy_class(strategy_config)
-            # Check if it's a built-in strategy
-            elif name in self.BUILTIN_STRATEGIES:
-                strategy = self._load_builtin(name, strategy_config)
-            # Try to load from strategies directory
+            # Check if it's a built-in strategy type
+            elif resolved_type in self.BUILTIN_STRATEGIES:
+                strategy = self._load_builtin(resolved_type, strategy_config)
+            # Try to load from strategies directory by type
             else:
-                strategy = self._load_from_file(name, strategy_config)
+                strategy = self._load_from_file(resolved_type, strategy_config)
 
             if strategy is None:
-                logger.error(f"Failed to load strategy: {name}")
+                logger.error(f"Failed to load strategy instance '{instance_name}' (type: {resolved_type})")
                 return None
 
             # Validate config
             errors = strategy.validate_config()
             if errors:
-                logger.warning(f"Strategy {name} config warnings: {errors}")
+                logger.warning(f"Strategy {instance_name} config warnings: {errors}")
 
-            # Register strategy
-            self._strategies[name] = strategy
-            self._enabled[name] = strategy_config.get('enabled', True)
+            # Register strategy instance
+            self._strategies[instance_name] = strategy
+            self._enabled[instance_name] = strategy_config.get('enabled', True)
+            self._instance_types[instance_name] = resolved_type
 
-            logger.info(f"Loaded strategy: {strategy}")
+            logger.info(f"Loaded strategy instance '{instance_name}' (type: {resolved_type}): {strategy}")
             return strategy
 
         except Exception as e:
-            logger.error(f"Error loading strategy {name}: {e}")
+            logger.error(f"Error loading strategy {instance_name}: {e}")
             return None
 
     def _load_builtin(self, name: str, config: Dict[str, Any]) -> Optional[BaseStrategy]:
@@ -213,7 +246,7 @@ class StrategyManager:
         return self._strategies.copy()
 
     def analyze_all(self, ticker: Any, current_price: float,
-                    context: Dict[str, Any] = None) -> List[StrategySignal]:
+                    context: Optional[Dict[str, Any]] = None) -> List[StrategySignal]:
         """
         Run all enabled strategies and collect signals.
 
@@ -228,24 +261,25 @@ class StrategyManager:
         signals = []
         context = context or {}
 
-        for name, strategy in self._strategies.items():
-            if not self._enabled.get(name, False):
+        for instance_name, strategy in self._strategies.items():
+            if not self._enabled.get(instance_name, False):
                 continue
 
             try:
                 signal = strategy.analyze(ticker, current_price, context)
                 if signal is not None:
-                    # Tag signal with strategy name
-                    signal.metadata['strategy'] = name
+                    # Tag signal with instance name and strategy type
+                    signal.metadata['strategy'] = instance_name
+                    signal.metadata['strategy_type'] = self._instance_types.get(instance_name, strategy.name)
                     signals.append(signal)
 
             except Exception as e:
-                logger.error(f"Strategy {name} error: {e}")
+                logger.error(f"Strategy {instance_name} error: {e}")
 
         return signals
 
     def get_best_signal(self, ticker: Any, current_price: float,
-                        context: Dict[str, Any] = None) -> Optional[StrategySignal]:
+                        context: Optional[Dict[str, Any]] = None) -> Optional[StrategySignal]:
         """
         Get the highest confidence signal from all enabled strategies.
 
@@ -265,7 +299,7 @@ class StrategyManager:
         # Return highest confidence signal
         return max(signals, key=lambda s: s.confidence)
 
-    def notify_position_opened(self, position: Any, strategy_name: str = None):
+    def notify_position_opened(self, position: Any, strategy_name: Optional[str] = None):
         """Notify strategies that a position was opened."""
         if strategy_name and strategy_name in self._strategies:
             self._strategies[strategy_name].on_position_opened(position)
@@ -275,13 +309,17 @@ class StrategyManager:
                 strategy.on_position_opened(position)
 
     def notify_position_closed(self, position: Any, reason: str,
-                               strategy_name: str = None):
+                               strategy_name: Optional[str] = None):
         """Notify strategies that a position was closed."""
         if strategy_name and strategy_name in self._strategies:
             self._strategies[strategy_name].on_position_closed(position, reason)
         else:
             for strategy in self._strategies.values():
                 strategy.on_position_closed(position, reason)
+
+    def get_strategy_type(self, instance_name: str) -> Optional[str]:
+        """Get the strategy type for a loaded instance."""
+        return self._instance_types.get(instance_name)
 
     def get_status(self) -> Dict[str, Any]:
         """Get status of all loaded strategies."""
@@ -291,6 +329,7 @@ class StrategyManager:
             'strategies': {
                 name: {
                     'enabled': self._enabled.get(name, False),
+                    'type': self._instance_types.get(name, strategy.name),
                     'version': strategy.version,
                     'description': strategy.description,
                 }
@@ -302,28 +341,29 @@ class StrategyManager:
     # Dynamic Loading / Hot Reload
     # =========================================================================
 
-    def reload_strategy(self, name: str) -> bool:
+    def reload_strategy(self, instance_name: str) -> bool:
         """
-        Hot-reload a strategy by name (re-imports the module from disk).
+        Hot-reload a strategy instance by name (re-imports the module from disk).
 
         Args:
-            name: Strategy identifier
+            instance_name: Strategy instance identifier
 
         Returns:
             True if reload succeeded, False otherwise
         """
-        if name not in self._strategies:
-            logger.warning(f"Cannot reload '{name}' - not currently loaded")
+        if instance_name not in self._strategies:
+            logger.warning(f"Cannot reload '{instance_name}' - not currently loaded")
             return False
 
-        # Remember enabled state
-        was_enabled = self._enabled.get(name, True)
-        strategy_config = self._get_strategy_config(name)
+        # Remember enabled state and get strategy type
+        was_enabled = self._enabled.get(instance_name, True)
+        strategy_config = self._get_strategy_config(instance_name)
+        strategy_type = self._instance_types.get(instance_name, instance_name)
 
         try:
-            # For built-in strategies, reload via importlib
-            if name in self.BUILTIN_STRATEGIES:
-                module_path = self.BUILTIN_STRATEGIES[name]
+            # For built-in strategy types, reload via importlib
+            if strategy_type in self.BUILTIN_STRATEGIES:
+                module_path = self.BUILTIN_STRATEGIES[strategy_type]
                 module_name, class_name = module_path.rsplit('.', 1)
 
                 # Remove from sys.modules to force fresh import
@@ -335,21 +375,21 @@ class StrategyManager:
                 new_strategy = strategy_class(strategy_config)
             else:
                 # File-based strategy - reload from file
-                new_strategy = self._load_from_file(name, strategy_config)
+                new_strategy = self._load_from_file(strategy_type, strategy_config)
 
             if new_strategy is None:
-                logger.error(f"Failed to reload strategy: {name}")
+                logger.error(f"Failed to reload strategy instance: {instance_name}")
                 return False
 
             # Replace the old strategy
-            self._strategies[name] = new_strategy
-            self._enabled[name] = was_enabled
+            self._strategies[instance_name] = new_strategy
+            self._enabled[instance_name] = was_enabled
 
-            logger.info(f"Reloaded strategy: {new_strategy}")
+            logger.info(f"Reloaded strategy instance '{instance_name}': {new_strategy}")
             return True
 
         except Exception as e:
-            logger.error(f"Error reloading strategy {name}: {e}")
+            logger.error(f"Error reloading strategy {instance_name}: {e}")
             return False
 
     def reload_all(self) -> Dict[str, bool]:

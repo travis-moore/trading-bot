@@ -62,3 +62,32 @@ safety:
   max_daily_loss: 500            # Max loss per day (dollars)
   trading_hours_only: true       # Only trade during market hours
   emergency_stop: false          # Emergency stop all trading
+
+strategies:
+  # Multiple swing trading instances with different parameters
+  swing_conservative:
+    type: swing_trading
+    enabled: true
+    zone_proximity_pct: 0.005       # 0.5% proximity (wider)
+    min_confidence: 0.75            # Higher confidence required
+    zscore_threshold: 3.5           # Stricter level filtering
+
+  swing_aggressive:
+    type: swing_trading
+    enabled: true
+    zone_proximity_pct: 0.003       # 0.3% proximity (tighter)
+    min_confidence: 0.65            # Lower confidence threshold
+    zscore_threshold: 2.5           # More levels considered
+
+  # Multiple scalping instances
+  scalp_quick:
+    type: scalping
+    enabled: true
+    imbalance_entry_threshold: 0.7
+    max_ticks_without_progress: 3   # Quick exit
+
+  scalp_patient:
+    type: scalping
+    enabled: true
+    imbalance_entry_threshold: 0.8  # Higher threshold
+    max_ticks_without_progress: 7   # More patience

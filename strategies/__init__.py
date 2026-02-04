@@ -13,6 +13,16 @@ Example usage:
     manager.load_all_configured()
     signal = manager.get_best_signal(ticker, current_price)
 
+    # Multiple instances of same type with different configs:
+    # config.yaml:
+    #   strategies:
+    #     swing_conservative:
+    #       type: swing_trading
+    #       zone_proximity_pct: 0.005
+    #     swing_aggressive:
+    #       type: swing_trading
+    #       zone_proximity_pct: 0.003
+
     # Or load directly
     strategy = SwingTradingStrategy()
     signal = strategy.analyze(ticker, current_price)
