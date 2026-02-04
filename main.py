@@ -139,6 +139,9 @@ class SwingTradingBot:
                 loaded = self.strategy_manager.load_all_configured()
                 self.logger.info(f"Loaded {loaded} trading strategies")
 
+                # Initialize budgets for strategies that have them configured
+                self._initialize_strategy_budgets()
+
             # Initialize trading engine
             engine_config = {
                 **self.config['risk_management'],
@@ -175,6 +178,47 @@ class SwingTradingBot:
             self.logger.error(f"Initialization failed: {e}", exc_info=True)
             return False
     
+    def _initialize_strategy_budgets(self):
+        """Initialize budgets for strategies that have them configured."""
+        if not self.db or not self.strategy_manager:
+            return
+
+        strategies_config = self.config.get('strategies', {})
+        initialized = 0
+
+        for instance_name, strat_config in strategies_config.items():
+            budget = strat_config.get('budget')
+            if budget is not None and budget > 0:
+                # Check if this strategy already has budget state
+                existing = self.db.get_strategy_budget(instance_name)
+                if existing:
+                    # Budget already exists - don't reset drawdown
+                    # Just update the budget cap if it changed
+                    if existing['budget'] != budget:
+                        self.db.set_strategy_budget(instance_name, budget, reset_drawdown=False)
+                        self.logger.info(
+                            f"Updated budget for '{instance_name}': "
+                            f"${existing['budget']:.2f} -> ${budget:.2f}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"Strategy '{instance_name}' budget: ${budget:.2f} "
+                            f"(available: ${existing['available']:.2f})"
+                        )
+                else:
+                    # New strategy - check if there's trade history to calculate from
+                    self.db.recalculate_budget_from_history(instance_name, budget)
+                    state = self.db.get_strategy_budget(instance_name)
+                    if state:
+                        self.logger.info(
+                            f"Initialized budget for '{instance_name}': ${budget:.2f} "
+                            f"(available: ${state['available']:.2f})"
+                        )
+                initialized += 1
+
+        if initialized > 0:
+            self.logger.info(f"Initialized budgets for {initialized} strategies")
+
     def _reconcile_positions(self):
         """Reconcile DB positions with IB account state on startup."""
         db_positions = self.db.get_open_positions()
@@ -455,6 +499,8 @@ class SwingTradingBot:
             self._cmd_discover()
         elif command == '/pnl':
             self._cmd_pnl()
+        elif command == '/budgets':
+            self._cmd_budgets()
         elif command == '/metrics':
             self._cmd_metrics()
         elif command.startswith('/metrics '):
@@ -489,6 +535,7 @@ Available commands:
   /disable <name>    - Disable a strategy
   /discover          - Discover and load new strategy files
   /pnl               - Show P&L breakdown by strategy
+  /budgets           - Show strategy budget status
   /metrics [symbol]  - Show detailed performance metrics
   /trades [filters]  - Query trade history (e.g., /trades NVDA winners)
   /export [type]     - Export trades to CSV (trades, report)
@@ -623,6 +670,36 @@ Available commands:
             f"  {'TOTAL':<20} {total['total_trades']:>8} {wl_total:>10} "
             f"${total['total_pnl']:>+10,.2f}"
         )
+        print("=" * 70 + "\n")
+
+    def _cmd_budgets(self):
+        """Show strategy budget status."""
+        if not self.db:
+            self.logger.warning("Database not available")
+            return
+
+        budgets = self.db.get_all_budgets()
+
+        print("\n" + "=" * 70)
+        print("STRATEGY BUDGETS")
+        print("=" * 70)
+
+        if not budgets:
+            print("  No strategy budgets configured")
+            print("  Add 'budget: <amount>' to strategy config in config.yaml")
+        else:
+            print(f"  {'Strategy':<25} {'Budget':>10} {'Available':>12} {'Drawdown':>10} {'%Used':>8}")
+            print("-" * 70)
+            for strategy_name, state in budgets.items():
+                budget = state['budget']
+                available = state['available']
+                drawdown = state['drawdown']
+                pct_used = (drawdown / budget * 100) if budget > 0 else 0
+                print(
+                    f"  {strategy_name:<25} ${budget:>8,.0f} ${available:>10,.2f} "
+                    f"${drawdown:>8,.2f} {pct_used:>6.1f}%"
+                )
+
         print("=" * 70 + "\n")
 
     def _cmd_metrics(self, args: str = ''):

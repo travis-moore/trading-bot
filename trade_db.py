@@ -77,6 +77,17 @@ class TradeDatabase:
                 pnl_pct         REAL,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- Strategy budget tracking
+            -- drawdown tracks how far below budget we are (0 = at full budget)
+            -- available = budget - drawdown
+            CREATE TABLE IF NOT EXISTS strategy_budgets (
+                strategy_name   TEXT PRIMARY KEY,
+                budget          REAL NOT NULL,
+                drawdown        REAL NOT NULL DEFAULT 0,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            );
         """)
         self.conn.commit()
         self._migrate_add_strategy_column()
@@ -225,6 +236,11 @@ class TradeDatabase:
                 f"Closed position id={position_id}: {row['local_symbol']} "
                 f"reason={exit_reason} pnl={pnl}"
             )
+
+            # Update strategy budget if P&L was calculated
+            if pnl is not None:
+                self.update_budget_after_trade(strategy, pnl)
+
         except Exception as e:
             self.conn.rollback()
             logger.error(f"Error closing position id={position_id}: {e}")
@@ -309,6 +325,208 @@ class TradeDatabase:
         for row in self.conn.execute("SELECT order_ref FROM trade_history"):
             refs.add(row['order_ref'])
         return refs
+
+    # =========================================================================
+    # Strategy Budget Management
+    # =========================================================================
+    #
+    # Budget model:
+    # - Each strategy has a max budget (cap)
+    # - Losses reduce available budget (increase drawdown)
+    # - Wins recover available budget up to the cap (decrease drawdown)
+    # - Profits beyond the cap don't increase available budget
+    #
+    # Formula: available = budget - drawdown
+    # After trade: drawdown = max(0, drawdown - pnl)
+    #   - Win (+pnl) reduces drawdown
+    #   - Loss (-pnl) increases drawdown
+
+    def get_strategy_budget(self, strategy_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get current budget state for a strategy.
+
+        Returns:
+            Dict with 'budget', 'drawdown', 'available' or None if not found
+        """
+        cursor = self.conn.execute(
+            "SELECT * FROM strategy_budgets WHERE strategy_name = ?",
+            (strategy_name,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        budget = row['budget']
+        drawdown = row['drawdown']
+        return {
+            'strategy_name': strategy_name,
+            'budget': budget,
+            'drawdown': drawdown,
+            'available': budget - drawdown,
+            'updated_at': row['updated_at'],
+        }
+
+    def set_strategy_budget(self, strategy_name: str, budget: float,
+                            reset_drawdown: bool = False) -> Dict[str, Any]:
+        """
+        Initialize or update a strategy's budget.
+
+        Args:
+            strategy_name: The strategy instance name
+            budget: Maximum budget for this strategy
+            reset_drawdown: If True, reset drawdown to 0 (full budget available)
+
+        Returns:
+            Current budget state
+        """
+        existing = self.get_strategy_budget(strategy_name)
+
+        if existing:
+            if reset_drawdown:
+                self.conn.execute("""
+                    UPDATE strategy_budgets
+                    SET budget = ?, drawdown = 0, updated_at = datetime('now')
+                    WHERE strategy_name = ?
+                """, (budget, strategy_name))
+            else:
+                # Keep existing drawdown, but cap it at new budget
+                new_drawdown = min(existing['drawdown'], budget)
+                self.conn.execute("""
+                    UPDATE strategy_budgets
+                    SET budget = ?, drawdown = ?, updated_at = datetime('now')
+                    WHERE strategy_name = ?
+                """, (budget, new_drawdown, strategy_name))
+        else:
+            self.conn.execute("""
+                INSERT INTO strategy_budgets (strategy_name, budget, drawdown)
+                VALUES (?, ?, 0)
+            """, (strategy_name, budget))
+
+        self.conn.commit()
+        logger.info(f"Set budget for '{strategy_name}': ${budget:.2f}" +
+                    (" (drawdown reset)" if reset_drawdown else ""))
+        # This should never be None since we just inserted/updated
+        result = self.get_strategy_budget(strategy_name)
+        assert result is not None
+        return result
+
+    def update_budget_after_trade(self, strategy_name: str, pnl: float) -> Optional[Dict[str, Any]]:
+        """
+        Adjust strategy budget after a trade closes.
+
+        The drawdown model:
+        - Win (pnl > 0): reduces drawdown, recovering budget up to cap
+        - Loss (pnl < 0): increases drawdown, reducing available budget
+
+        Args:
+            strategy_name: The strategy instance name
+            pnl: The trade's P&L (positive = profit, negative = loss)
+
+        Returns:
+            Updated budget state, or None if strategy has no budget configured
+        """
+        existing = self.get_strategy_budget(strategy_name)
+        if not existing:
+            logger.debug(f"No budget configured for strategy '{strategy_name}'")
+            return None
+
+        # New drawdown = max(0, old_drawdown - pnl)
+        # Win (+pnl) reduces drawdown, loss (-pnl) increases it
+        old_drawdown = existing['drawdown']
+        new_drawdown = max(0, old_drawdown - pnl)
+
+        self.conn.execute("""
+            UPDATE strategy_budgets
+            SET drawdown = ?, updated_at = datetime('now')
+            WHERE strategy_name = ?
+        """, (new_drawdown, strategy_name))
+        self.conn.commit()
+
+        new_state = self.get_strategy_budget(strategy_name)
+        if new_state:
+            logger.info(
+                f"Budget update for '{strategy_name}': pnl=${pnl:+.2f}, "
+                f"drawdown ${old_drawdown:.2f}->${new_drawdown:.2f}, "
+                f"available ${new_state['available']:.2f}/${existing['budget']:.2f}"
+            )
+        return new_state
+
+    def get_available_budget(self, strategy_name: str) -> float:
+        """
+        Get the current available budget for a strategy.
+
+        Returns:
+            Available budget amount, or 0 if strategy has no budget configured
+        """
+        state = self.get_strategy_budget(strategy_name)
+        if not state:
+            return 0.0
+        return state['available']
+
+    def get_all_budgets(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get budget state for all configured strategies.
+
+        Returns:
+            Dict mapping strategy_name -> budget state
+        """
+        cursor = self.conn.execute("SELECT * FROM strategy_budgets ORDER BY strategy_name")
+        result = {}
+        for row in cursor.fetchall():
+            budget = row['budget']
+            drawdown = row['drawdown']
+            result[row['strategy_name']] = {
+                'budget': budget,
+                'drawdown': drawdown,
+                'available': budget - drawdown,
+                'updated_at': row['updated_at'],
+            }
+        return result
+
+    def recalculate_budget_from_history(self, strategy_name: str, initial_budget: float) -> Dict[str, Any]:
+        """
+        Recalculate a strategy's budget state from trade history.
+
+        This is useful for:
+        - Recovering from corrupted budget data
+        - Initializing budget for a strategy with existing trades
+
+        Args:
+            strategy_name: The strategy instance name
+            initial_budget: The strategy's configured budget cap
+
+        Returns:
+            Recalculated budget state
+        """
+        # Get all trades for this strategy in chronological order
+        cursor = self.conn.execute("""
+            SELECT pnl FROM trade_history
+            WHERE strategy = ? AND pnl IS NOT NULL
+            ORDER BY exit_time ASC
+        """, (strategy_name,))
+
+        drawdown = 0.0
+        for row in cursor.fetchall():
+            pnl = row['pnl']
+            drawdown = max(0, drawdown - pnl)
+
+        # Update or insert the budget record
+        self.conn.execute("""
+            INSERT INTO strategy_budgets (strategy_name, budget, drawdown)
+            VALUES (?, ?, ?)
+            ON CONFLICT(strategy_name) DO UPDATE SET
+                budget = excluded.budget,
+                drawdown = excluded.drawdown,
+                updated_at = datetime('now')
+        """, (strategy_name, initial_budget, drawdown))
+        self.conn.commit()
+
+        logger.info(f"Recalculated budget for '{strategy_name}' from history: "
+                    f"drawdown=${drawdown:.2f}, available=${initial_budget - drawdown:.2f}")
+        # This should never be None since we just inserted/updated
+        result = self.get_strategy_budget(strategy_name)
+        assert result is not None
+        return result
 
     # =========================================================================
     # Trade Query & Reporting

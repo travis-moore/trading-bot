@@ -422,6 +422,28 @@ class TradingEngine:
         # Get strategy name from signal metadata (if using strategy system)
         strategy_name = getattr(signal, 'metadata', {}).get('strategy', 'swing_trading')
 
+        # Check strategy budget if configured
+        if self.db:
+            available_budget = self.db.get_available_budget(strategy_name)
+            if available_budget > 0:
+                # Budget is configured for this strategy
+                trade_cost = quantity * entry_price * 100  # Cost per contract * 100 shares
+                if trade_cost > available_budget:
+                    # Reduce quantity to fit budget
+                    max_affordable = int(available_budget / (entry_price * 100))
+                    if max_affordable < 1:
+                        logger.info(
+                            f"Strategy '{strategy_name}' has insufficient budget "
+                            f"(available: ${available_budget:.2f}, need: ${entry_price * 100:.2f} per contract)"
+                        )
+                        return False
+                    old_qty = quantity
+                    quantity = max_affordable
+                    logger.info(
+                        f"Reducing quantity from {old_qty} to {quantity} to fit "
+                        f"'{strategy_name}' budget (${available_budget:.2f} available)"
+                    )
+
         # Generate order tag and persist before placing order (crash safety)
         order_ref = None
         db_id = None
