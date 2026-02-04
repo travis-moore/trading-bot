@@ -455,6 +455,21 @@ class SwingTradingBot:
             self._cmd_discover()
         elif command == '/pnl':
             self._cmd_pnl()
+        elif command == '/metrics':
+            self._cmd_metrics()
+        elif command.startswith('/metrics '):
+            args = command.split(' ', 1)[1].strip()
+            self._cmd_metrics(args)
+        elif command == '/trades':
+            self._cmd_trades()
+        elif command.startswith('/trades '):
+            args = command.split(' ', 1)[1].strip()
+            self._cmd_trades(args)
+        elif command == '/export':
+            self._cmd_export()
+        elif command.startswith('/export '):
+            args = command.split(' ', 1)[1].strip()
+            self._cmd_export(args)
         elif command == '/quit' or command == '/stop':
             self.logger.info("Stop command received")
             self.running = False
@@ -474,6 +489,9 @@ Available commands:
   /disable <name>    - Disable a strategy
   /discover          - Discover and load new strategy files
   /pnl               - Show P&L breakdown by strategy
+  /metrics [symbol]  - Show detailed performance metrics
+  /trades [filters]  - Query trade history (e.g., /trades NVDA winners)
+  /export [type]     - Export trades to CSV (trades, report)
   /quit or /stop     - Stop the bot gracefully
 """
         print(help_text)
@@ -606,6 +624,141 @@ Available commands:
             f"${total['total_pnl']:>+10,.2f}"
         )
         print("=" * 70 + "\n")
+
+    def _cmd_metrics(self, args: str = ''):
+        """Show detailed performance metrics."""
+        if not self.db:
+            self.logger.warning("Database not available")
+            return
+
+        # Parse optional symbol filter
+        symbol = args.upper() if args else None  # None is valid for db.get_performance_metrics
+
+        metrics = self.db.get_performance_metrics(symbol=symbol)
+
+        title = f"PERFORMANCE METRICS - {symbol}" if symbol else "PERFORMANCE METRICS"
+        print("\n" + "=" * 70)
+        print(title)
+        print("=" * 70)
+
+        if metrics['total_trades'] == 0:
+            print("  No completed trades yet")
+            print("=" * 70 + "\n")
+            return
+
+        print(f"  Total Trades:     {metrics['total_trades']}")
+        print(f"  Winners/Losers:   {metrics['winners']}/{metrics['losers']}")
+        print(f"  Win Rate:         {metrics['win_rate']:.1f}%")
+        print("-" * 70)
+        print(f"  Total P&L:        ${metrics['total_pnl']:+,.2f}")
+        print(f"  Average P&L:      ${metrics['avg_pnl']:+,.2f} ({metrics['avg_pnl_pct']:+.1f}%)")
+        print(f"  Average Winner:   ${metrics['avg_winner']:+,.2f}")
+        print(f"  Average Loser:    ${metrics['avg_loser']:+,.2f}")
+        print("-" * 70)
+        print(f"  Largest Winner:   ${metrics['largest_winner']:+,.2f}")
+        print(f"  Largest Loser:    ${metrics['largest_loser']:+,.2f}")
+        print(f"  Profit Factor:    {metrics['profit_factor']}")
+        print(f"  Avg Hold Time:    {metrics['avg_hold_hours']:.1f} hours")
+
+        if metrics['best_trade']:
+            best = metrics['best_trade']
+            print("-" * 70)
+            print(f"  Best Trade:  {best['local_symbol']} ${best['pnl']:+,.2f}")
+
+        if metrics['worst_trade']:
+            worst = metrics['worst_trade']
+            print(f"  Worst Trade: {worst['local_symbol']} ${worst['pnl']:+,.2f}")
+
+        print("=" * 70 + "\n")
+
+    def _cmd_trades(self, args: str = ''):
+        """Query and display trade history."""
+        if not self.db:
+            self.logger.warning("Database not available")
+            return
+
+        # Parse filters from args
+        symbol = None
+        winners_only = False
+        losers_only = False
+        limit = 20
+
+        if args:
+            parts = args.split()
+            for part in parts:
+                part_upper = part.upper()
+                if part_upper == 'WINNERS':
+                    winners_only = True
+                elif part_upper == 'LOSERS':
+                    losers_only = True
+                elif part_upper.isdigit():
+                    limit = int(part_upper)
+                elif len(part_upper) <= 5:  # Likely a symbol
+                    symbol = part_upper
+
+        trades = self.db.query_trades(
+            symbol=symbol,
+            winners_only=winners_only,
+            losers_only=losers_only,
+            limit=limit,
+        )
+
+        filter_desc = []
+        if symbol:
+            filter_desc.append(symbol)
+        if winners_only:
+            filter_desc.append("winners")
+        if losers_only:
+            filter_desc.append("losers")
+        title = "TRADE HISTORY"
+        if filter_desc:
+            title += f" ({', '.join(filter_desc)})"
+
+        print("\n" + "=" * 90)
+        print(title)
+        print("=" * 90)
+
+        if not trades:
+            print("  No trades found matching criteria")
+            print("=" * 90 + "\n")
+            return
+
+        print(f"  {'Date':<12} {'Symbol':<20} {'Dir':<8} {'Entry':>8} {'Exit':>8} {'P&L':>10} {'Reason':<15}")
+        print("-" * 90)
+
+        for trade in trades:
+            exit_date = trade['exit_time'][:10] if trade['exit_time'] else 'N/A'
+            pnl = trade['pnl'] or 0
+            print(
+                f"  {exit_date:<12} {trade['local_symbol']:<20} {trade['direction']:<8} "
+                f"${trade['entry_price']:>6.2f} ${trade['exit_price'] or 0:>6.2f} "
+                f"${pnl:>+8,.2f} {trade['exit_reason'] or '':<15}"
+            )
+
+        print("-" * 90)
+        print(f"  Showing {len(trades)} trades (use '/trades <symbol> [winners|losers] [limit]')")
+        print("=" * 90 + "\n")
+
+    def _cmd_export(self, args: str = ''):
+        """Export trades or report to CSV."""
+        if not self.db:
+            self.logger.warning("Database not available")
+            return
+
+        from datetime import datetime as dt
+        timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+
+        export_type = (args or 'trades').lower()
+
+        if export_type == 'report':
+            filepath = f"performance_report_{timestamp}.csv"
+            self.db.export_performance_report(filepath)
+            print(f"\nExported performance report to: {filepath}\n")
+        else:
+            # Default to trades export
+            filepath = f"trades_{timestamp}.csv"
+            count = self.db.export_trades_to_csv(filepath)
+            print(f"\nExported {count} trades to: {filepath}\n")
 
     def run(self):
         """Main bot loop"""

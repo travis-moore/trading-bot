@@ -309,3 +309,552 @@ class TradeDatabase:
         for row in self.conn.execute("SELECT order_ref FROM trade_history"):
             refs.add(row['order_ref'])
         return refs
+
+    # =========================================================================
+    # Trade Query & Reporting
+    # =========================================================================
+
+    def query_trades(
+        self,
+        symbol: Optional[str] = None,
+        strategy: Optional[str] = None,
+        direction: Optional[str] = None,
+        pattern: Optional[str] = None,
+        exit_reason: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        winners_only: bool = False,
+        losers_only: bool = False,
+        min_pnl: Optional[float] = None,
+        max_pnl: Optional[float] = None,
+        limit: int = 1000,
+        offset: int = 0,
+        order_by: str = 'exit_time',
+        descending: bool = True,
+    ) -> List[sqlite3.Row]:
+        """
+        Query trade history with flexible filtering.
+
+        Args:
+            symbol: Filter by underlying symbol (e.g., 'NVDA')
+            strategy: Filter by strategy name
+            direction: Filter by direction ('bullish' or 'bearish')
+            pattern: Filter by pattern name
+            exit_reason: Filter by exit reason
+            start_date: Filter trades with exit_time >= start_date (ISO format)
+            end_date: Filter trades with exit_time <= end_date (ISO format)
+            winners_only: Only return profitable trades
+            losers_only: Only return losing trades
+            min_pnl: Minimum P&L filter
+            max_pnl: Maximum P&L filter
+            limit: Maximum number of results
+            offset: Skip first N results (for pagination)
+            order_by: Column to sort by
+            descending: Sort descending if True
+
+        Returns:
+            List of trade rows matching criteria
+        """
+        conditions = []
+        params = []
+
+        if symbol:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+
+        if strategy:
+            conditions.append("strategy = ?")
+            params.append(strategy)
+
+        if direction:
+            conditions.append("direction = ?")
+            params.append(direction)
+
+        if pattern:
+            conditions.append("pattern = ?")
+            params.append(pattern)
+
+        if exit_reason:
+            conditions.append("exit_reason = ?")
+            params.append(exit_reason)
+
+        if start_date:
+            conditions.append("exit_time >= ?")
+            params.append(start_date)
+
+        if end_date:
+            conditions.append("exit_time <= ?")
+            params.append(end_date)
+
+        if winners_only:
+            conditions.append("pnl > 0")
+
+        if losers_only:
+            conditions.append("pnl <= 0")
+
+        if min_pnl is not None:
+            conditions.append("pnl >= ?")
+            params.append(min_pnl)
+
+        if max_pnl is not None:
+            conditions.append("pnl <= ?")
+            params.append(max_pnl)
+
+        # Build query
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        order_direction = "DESC" if descending else "ASC"
+
+        # Validate order_by to prevent SQL injection
+        valid_columns = {
+            'id', 'symbol', 'local_symbol', 'strategy', 'direction', 'pattern',
+            'entry_price', 'exit_price', 'entry_time', 'exit_time',
+            'pnl', 'pnl_pct', 'quantity', 'exit_reason'
+        }
+        if order_by not in valid_columns:
+            order_by = 'exit_time'
+
+        query = f"""
+            SELECT * FROM trade_history
+            WHERE {where_clause}
+            ORDER BY {order_by} {order_direction}
+            LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+
+        cursor = self.conn.execute(query, params)
+        return cursor.fetchall()
+
+    def count_trades(
+        self,
+        symbol: Optional[str] = None,
+        strategy: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> int:
+        """Count trades matching criteria (useful for pagination)."""
+        conditions = []
+        params = []
+
+        if symbol:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+        if strategy:
+            conditions.append("strategy = ?")
+            params.append(strategy)
+        if start_date:
+            conditions.append("exit_time >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("exit_time <= ?")
+            params.append(end_date)
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+        cursor = self.conn.execute(
+            f"SELECT COUNT(*) as count FROM trade_history WHERE {where_clause}",
+            params
+        )
+        return cursor.fetchone()['count']
+
+    def get_performance_metrics(
+        self,
+        symbol: Optional[str] = None,
+        strategy: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        exclude_manual: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Calculate comprehensive performance metrics.
+
+        Args:
+            symbol: Filter by symbol
+            strategy: Filter by strategy
+            start_date: Start date filter (ISO format)
+            end_date: End date filter (ISO format)
+            exclude_manual: Exclude manual closes and reconciliation entries
+
+        Returns:
+            Dict with performance metrics:
+            - total_trades, winners, losers
+            - win_rate, loss_rate
+            - total_pnl, avg_pnl, avg_pnl_pct
+            - avg_winner, avg_loser
+            - largest_winner, largest_loser
+            - profit_factor (gross profit / gross loss)
+            - avg_hold_time_hours
+            - best_trade, worst_trade (full trade details)
+        """
+        conditions = ["pnl IS NOT NULL"]
+        params = []
+
+        if exclude_manual:
+            conditions.append("exit_reason NOT IN ('manual_close', 'reconciliation_not_found')")
+
+        if symbol:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+
+        if strategy:
+            conditions.append("strategy = ?")
+            params.append(strategy)
+
+        if start_date:
+            conditions.append("exit_time >= ?")
+            params.append(start_date)
+
+        if end_date:
+            conditions.append("exit_time <= ?")
+            params.append(end_date)
+
+        where_clause = " AND ".join(conditions)
+
+        # Get aggregate metrics
+        cursor = self.conn.execute(f"""
+            SELECT
+                COUNT(*) as total_trades,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as winners,
+                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losers,
+                COALESCE(SUM(pnl), 0) as total_pnl,
+                COALESCE(AVG(pnl), 0) as avg_pnl,
+                COALESCE(AVG(pnl_pct), 0) as avg_pnl_pct,
+                COALESCE(AVG(CASE WHEN pnl > 0 THEN pnl END), 0) as avg_winner,
+                COALESCE(AVG(CASE WHEN pnl <= 0 THEN pnl END), 0) as avg_loser,
+                COALESCE(MAX(pnl), 0) as largest_winner,
+                COALESCE(MIN(pnl), 0) as largest_loser,
+                COALESCE(SUM(CASE WHEN pnl > 0 THEN pnl ELSE 0 END), 0) as gross_profit,
+                COALESCE(SUM(CASE WHEN pnl < 0 THEN ABS(pnl) ELSE 0 END), 0) as gross_loss
+            FROM trade_history
+            WHERE {where_clause}
+        """, params)
+
+        row = cursor.fetchone()
+        total_trades = row['total_trades'] or 0
+        winners = row['winners'] or 0
+        losers = row['losers'] or 0
+
+        # Calculate derived metrics
+        win_rate = (winners / total_trades * 100) if total_trades > 0 else 0
+        loss_rate = (losers / total_trades * 100) if total_trades > 0 else 0
+        profit_factor = (row['gross_profit'] / row['gross_loss']) if row['gross_loss'] > 0 else float('inf') if row['gross_profit'] > 0 else 0
+
+        # Get best and worst trades
+        best_trade = None
+        worst_trade = None
+        if total_trades > 0:
+            cursor = self.conn.execute(f"""
+                SELECT * FROM trade_history
+                WHERE {where_clause}
+                ORDER BY pnl DESC LIMIT 1
+            """, params)
+            best_row = cursor.fetchone()
+            if best_row:
+                best_trade = dict(best_row)
+
+            cursor = self.conn.execute(f"""
+                SELECT * FROM trade_history
+                WHERE {where_clause}
+                ORDER BY pnl ASC LIMIT 1
+            """, params)
+            worst_row = cursor.fetchone()
+            if worst_row:
+                worst_trade = dict(worst_row)
+
+        # Calculate average hold time
+        cursor = self.conn.execute(f"""
+            SELECT AVG(
+                (julianday(exit_time) - julianday(entry_time)) * 24
+            ) as avg_hold_hours
+            FROM trade_history
+            WHERE {where_clause}
+        """, params)
+        avg_hold_row = cursor.fetchone()
+        avg_hold_hours = avg_hold_row['avg_hold_hours'] or 0
+
+        return {
+            'total_trades': total_trades,
+            'winners': winners,
+            'losers': losers,
+            'win_rate': round(win_rate, 2),
+            'loss_rate': round(loss_rate, 2),
+            'total_pnl': round(row['total_pnl'] or 0, 2),
+            'avg_pnl': round(row['avg_pnl'] or 0, 2),
+            'avg_pnl_pct': round(row['avg_pnl_pct'] or 0, 2),
+            'avg_winner': round(row['avg_winner'] or 0, 2),
+            'avg_loser': round(row['avg_loser'] or 0, 2),
+            'largest_winner': round(row['largest_winner'] or 0, 2),
+            'largest_loser': round(row['largest_loser'] or 0, 2),
+            'gross_profit': round(row['gross_profit'] or 0, 2),
+            'gross_loss': round(row['gross_loss'] or 0, 2),
+            'profit_factor': round(profit_factor, 2) if profit_factor != float('inf') else 'inf',
+            'avg_hold_hours': round(avg_hold_hours, 2),
+            'best_trade': best_trade,
+            'worst_trade': worst_trade,
+        }
+
+    def get_daily_pnl(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        strategy: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get P&L aggregated by day.
+
+        Returns:
+            List of dicts with date, trade_count, pnl, cumulative_pnl
+        """
+        conditions = ["pnl IS NOT NULL"]
+        params = []
+
+        if start_date:
+            conditions.append("exit_time >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("exit_time <= ?")
+            params.append(end_date)
+        if strategy:
+            conditions.append("strategy = ?")
+            params.append(strategy)
+
+        where_clause = " AND ".join(conditions)
+
+        cursor = self.conn.execute(f"""
+            SELECT
+                DATE(exit_time) as trade_date,
+                COUNT(*) as trade_count,
+                SUM(pnl) as daily_pnl,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses
+            FROM trade_history
+            WHERE {where_clause}
+            GROUP BY DATE(exit_time)
+            ORDER BY trade_date ASC
+        """, params)
+
+        results = []
+        cumulative = 0
+        for row in cursor.fetchall():
+            cumulative += row['daily_pnl']
+            results.append({
+                'date': row['trade_date'],
+                'trade_count': row['trade_count'],
+                'wins': row['wins'],
+                'losses': row['losses'],
+                'daily_pnl': round(row['daily_pnl'], 2),
+                'cumulative_pnl': round(cumulative, 2),
+            })
+
+        return results
+
+    def get_symbol_breakdown(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get P&L breakdown by symbol."""
+        conditions = ["pnl IS NOT NULL"]
+        params = []
+
+        if start_date:
+            conditions.append("exit_time >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("exit_time <= ?")
+            params.append(end_date)
+
+        where_clause = " AND ".join(conditions)
+
+        cursor = self.conn.execute(f"""
+            SELECT
+                symbol,
+                COUNT(*) as trade_count,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins,
+                SUM(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) as losses,
+                SUM(pnl) as total_pnl,
+                AVG(pnl) as avg_pnl
+            FROM trade_history
+            WHERE {where_clause}
+            GROUP BY symbol
+            ORDER BY total_pnl DESC
+        """, params)
+
+        return [
+            {
+                'symbol': row['symbol'],
+                'trade_count': row['trade_count'],
+                'wins': row['wins'],
+                'losses': row['losses'],
+                'win_rate': round(row['wins'] / row['trade_count'] * 100, 1) if row['trade_count'] > 0 else 0,
+                'total_pnl': round(row['total_pnl'], 2),
+                'avg_pnl': round(row['avg_pnl'], 2),
+            }
+            for row in cursor.fetchall()
+        ]
+
+    # =========================================================================
+    # CSV Export
+    # =========================================================================
+
+    def export_trades_to_csv(
+        self,
+        filepath: str,
+        symbol: Optional[str] = None,
+        strategy: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        include_all: bool = False,
+    ) -> int:
+        """
+        Export trade history to CSV file.
+
+        Args:
+            filepath: Output CSV file path
+            symbol: Filter by symbol
+            strategy: Filter by strategy
+            start_date: Filter by start date
+            end_date: Filter by end date
+            include_all: Include manual closes and reconciliation entries
+
+        Returns:
+            Number of trades exported
+        """
+        import csv
+
+        # Query trades with filters
+        conditions = []
+        params = []
+
+        if not include_all:
+            conditions.append("exit_reason NOT IN ('manual_close', 'reconciliation_not_found', 'order_cancelled', 'order_no_fills')")
+
+        if symbol:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+        if strategy:
+            conditions.append("strategy = ?")
+            params.append(strategy)
+        if start_date:
+            conditions.append("exit_time >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("exit_time <= ?")
+            params.append(end_date)
+
+        where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+        cursor = self.conn.execute(f"""
+            SELECT * FROM trade_history
+            WHERE {where_clause}
+            ORDER BY exit_time ASC
+        """, params)
+
+        rows = cursor.fetchall()
+        if not rows:
+            logger.info("No trades to export")
+            return 0
+
+        # Define CSV columns (human-friendly order)
+        columns = [
+            'id', 'symbol', 'local_symbol', 'direction', 'pattern', 'strategy',
+            'quantity', 'entry_price', 'exit_price', 'entry_time', 'exit_time',
+            'exit_reason', 'pnl', 'pnl_pct', 'strike', 'expiry', 'right',
+            'con_id', 'order_ref', 'entry_order_id', 'exit_order_id'
+        ]
+
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(columns)
+
+            for row in rows:
+                writer.writerow([row[col] if col in row.keys() else '' for col in columns])
+
+        logger.info(f"Exported {len(rows)} trades to {filepath}")
+        return len(rows)
+
+    def export_performance_report(
+        self,
+        filepath: str,
+        strategy: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> None:
+        """
+        Export a comprehensive performance report to CSV.
+
+        Includes:
+        - Summary metrics
+        - Daily P&L
+        - Symbol breakdown
+        - Strategy breakdown
+        """
+        import csv
+
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+
+            # Header
+            writer.writerow(['TRADING BOT PERFORMANCE REPORT'])
+            writer.writerow([f'Generated: {datetime.now().isoformat()}'])
+            if start_date or end_date:
+                writer.writerow([f'Period: {start_date or "start"} to {end_date or "now"}'])
+            if strategy:
+                writer.writerow([f'Strategy: {strategy}'])
+            writer.writerow([])
+
+            # Summary metrics
+            metrics = self.get_performance_metrics(
+                strategy=strategy, start_date=start_date, end_date=end_date
+            )
+
+            writer.writerow(['=== SUMMARY METRICS ==='])
+            writer.writerow(['Metric', 'Value'])
+            writer.writerow(['Total Trades', metrics['total_trades']])
+            writer.writerow(['Winners', metrics['winners']])
+            writer.writerow(['Losers', metrics['losers']])
+            writer.writerow(['Win Rate %', metrics['win_rate']])
+            writer.writerow(['Total P&L', f"${metrics['total_pnl']:.2f}"])
+            writer.writerow(['Average P&L', f"${metrics['avg_pnl']:.2f}"])
+            writer.writerow(['Average P&L %', f"{metrics['avg_pnl_pct']:.2f}%"])
+            writer.writerow(['Average Winner', f"${metrics['avg_winner']:.2f}"])
+            writer.writerow(['Average Loser', f"${metrics['avg_loser']:.2f}"])
+            writer.writerow(['Largest Winner', f"${metrics['largest_winner']:.2f}"])
+            writer.writerow(['Largest Loser', f"${metrics['largest_loser']:.2f}"])
+            writer.writerow(['Profit Factor', metrics['profit_factor']])
+            writer.writerow(['Avg Hold Time (hours)', metrics['avg_hold_hours']])
+            writer.writerow([])
+
+            # Daily P&L
+            writer.writerow(['=== DAILY P&L ==='])
+            writer.writerow(['Date', 'Trades', 'Wins', 'Losses', 'Daily P&L', 'Cumulative P&L'])
+            daily = self.get_daily_pnl(start_date=start_date, end_date=end_date, strategy=strategy)
+            for day in daily:
+                writer.writerow([
+                    day['date'], day['trade_count'], day['wins'], day['losses'],
+                    f"${day['daily_pnl']:.2f}", f"${day['cumulative_pnl']:.2f}"
+                ])
+            writer.writerow([])
+
+            # Symbol breakdown
+            writer.writerow(['=== SYMBOL BREAKDOWN ==='])
+            writer.writerow(['Symbol', 'Trades', 'Wins', 'Losses', 'Win Rate %', 'Total P&L', 'Avg P&L'])
+            symbols = self.get_symbol_breakdown(start_date=start_date, end_date=end_date)
+            for sym in symbols:
+                writer.writerow([
+                    sym['symbol'], sym['trade_count'], sym['wins'], sym['losses'],
+                    f"{sym['win_rate']:.1f}%", f"${sym['total_pnl']:.2f}", f"${sym['avg_pnl']:.2f}"
+                ])
+            writer.writerow([])
+
+            # Strategy breakdown (if not filtering by strategy)
+            if not strategy:
+                writer.writerow(['=== STRATEGY BREAKDOWN ==='])
+                writer.writerow(['Strategy', 'Trades', 'Wins', 'Losses', 'Win Rate %', 'Total P&L', 'Avg P&L'])
+                by_strategy = self.get_pnl_by_strategy()
+                for strat_name, stats in by_strategy.items():
+                    win_rate = (stats['wins'] / stats['total_trades'] * 100) if stats['total_trades'] > 0 else 0
+                    writer.writerow([
+                        strat_name, stats['total_trades'], stats['wins'], stats['losses'],
+                        f"{win_rate:.1f}%", f"${stats['total_pnl']:.2f}", f"${stats['avg_pnl']:.2f}"
+                    ])
+
+        logger.info(f"Exported performance report to {filepath}")
