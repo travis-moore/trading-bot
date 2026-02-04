@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from enum import Enum
+import statistics
 
 
 class TradeDirection(Enum):
@@ -91,7 +92,7 @@ class BaseStrategy(ABC):
                 return None
     """
 
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
         """
         Initialize strategy with configuration.
 
@@ -216,3 +217,130 @@ class BaseStrategy(ABC):
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} name='{self.name}' v{self.version}>"
+
+    # =========================================================================
+    # Proportional Calculation Methods (inherited by all strategies)
+    # =========================================================================
+
+    def is_price_near_level(self, price: float, level: float,
+                            proximity_pct: Optional[float] = None,
+                            atr: Optional[float] = None,
+                            atr_multiplier: float = 0.5) -> bool:
+        """
+        Check if price is within proximity of a level using proportional scaling.
+
+        Uses percentage-based proximity by default, or ATR-based if ATR is provided.
+
+        Args:
+            price: Current price
+            level: The price level to check against
+            proximity_pct: Percentage proximity (e.g., 0.005 = 0.5%)
+                          If None, uses config 'zone_proximity_pct'
+            atr: Average True Range value (optional, for volatility-adjusted proximity)
+            atr_multiplier: Multiplier for ATR-based proximity (default 0.5)
+
+        Returns:
+            True if price is within the proximity zone of the level
+        """
+        pct = proximity_pct if proximity_pct is not None else self.get_config('zone_proximity_pct', 0.005)
+
+        # Calculate proximity distance
+        if atr is not None and atr > 0:
+            # ATR-based proximity: use atr_multiplier * ATR
+            proximity_distance = atr * atr_multiplier
+        else:
+            # Percentage-based proximity: |P - L| <= P * proximity_pct
+            proximity_distance = price * pct
+
+        distance = abs(price - level)
+        return distance <= proximity_distance
+
+    def get_proximity_distance(self, price: float,
+                               proximity_pct: Optional[float] = None,
+                               atr: Optional[float] = None,
+                               atr_multiplier: float = 0.5) -> float:
+        """
+        Calculate the proximity distance for a given price.
+
+        Args:
+            price: Current price
+            proximity_pct: Percentage proximity (e.g., 0.005 = 0.5%)
+            atr: Average True Range value (optional)
+            atr_multiplier: Multiplier for ATR-based proximity
+
+        Returns:
+            The proximity distance in dollars
+        """
+        pct = proximity_pct if proximity_pct is not None else self.get_config('zone_proximity_pct', 0.005)
+
+        if atr is not None and atr > 0:
+            return atr * atr_multiplier
+        else:
+            return price * pct
+
+    def is_in_exclusion_zone(self, price: float, level: float,
+                             exclusion_pct: Optional[float] = None) -> bool:
+        """
+        Check if a level is within the exclusion zone around current price.
+
+        The exclusion zone filters out market maker noise near the current price.
+
+        Args:
+            price: Current price
+            level: The price level to check
+            exclusion_pct: Exclusion zone as percentage (default 0.5% = 0.005)
+
+        Returns:
+            True if level is within the exclusion zone (should be ignored)
+        """
+        pct = exclusion_pct if exclusion_pct is not None else self.get_config('exclusion_zone_pct', 0.005)
+
+        exclusion_distance = price * pct
+        distance = abs(price - level)
+        return distance <= exclusion_distance
+
+    def calculate_zscore(self, value: float, values: List[float]) -> float:
+        """
+        Calculate z-score of a value relative to a list of values.
+
+        Args:
+            value: The value to calculate z-score for
+            values: List of reference values
+
+        Returns:
+            Z-score (number of standard deviations from mean)
+        """
+        if len(values) < 2:
+            return 0.0
+
+        mean = statistics.mean(values)
+        stdev = statistics.stdev(values)
+
+        if stdev == 0:
+            return 0.0
+
+        return (value - mean) / stdev
+
+    def is_significant_level(self, volume: int, nearby_volumes: List[int],
+                             zscore_threshold: Optional[float] = None) -> bool:
+        """
+        Determine if a volume level is statistically significant.
+
+        Uses z-score filtering: only levels with volume > N standard deviations
+        above the local average are considered significant.
+
+        Args:
+            volume: Volume at the price level to check
+            nearby_volumes: List of volumes at nearby price levels
+            zscore_threshold: Minimum z-score to be significant (default 3.0)
+
+        Returns:
+            True if the volume is statistically significant
+        """
+        threshold = zscore_threshold if zscore_threshold is not None else self.get_config('zscore_threshold', 3.0)
+
+        if len(nearby_volumes) < 2:
+            return volume > 0
+
+        zscore = self.calculate_zscore(float(volume), [float(v) for v in nearby_volumes])
+        return zscore >= threshold

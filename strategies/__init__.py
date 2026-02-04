@@ -21,6 +21,7 @@ Example usage:
 from .base_strategy import BaseStrategy, StrategySignal, TradeDirection
 from .strategy_manager import StrategyManager
 from .swing_trading import SwingTradingStrategy
+from .scalping import ScalpingStrategy
 
 __all__ = [
     'BaseStrategy',
@@ -28,4 +29,5 @@ __all__ = [
     'TradeDirection',
     'StrategyManager',
     'SwingTradingStrategy',
+    'ScalpingStrategy',
 ]
