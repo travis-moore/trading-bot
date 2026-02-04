@@ -13,11 +13,23 @@ Automated options trading bot based on order book liquidity analysis using Inter
 ## Architecture
 
 ```
-main.py                 # Main orchestrator
-├── ib_wrapper.py       # IB API interface
-├── liquidity_analyzer.py  # Order book analysis
-└── trading_engine.py   # Trading logic & execution
+main.py                    # Main orchestrator, CLI commands
+├── ib_wrapper.py          # IB API interface (ib_insync wrapper)
+├── liquidity_analyzer.py  # Order book analysis (legacy)
+├── trading_engine.py      # Trading logic & execution
+├── trade_db.py            # SQLite persistence layer
+└── strategies/            # Plugin-based strategy system
+    ├── base_strategy.py       # Abstract base class
+    ├── strategy_manager.py    # Plugin loader & orchestrator
+    ├── swing_trading.py       # Swing trading strategy
+    └── scalping.py            # Scalping strategy
 ```
+
+### Key Components
+
+- **TradeDatabase** (`trade_db.py`): SQLite persistence for positions, trade history, and strategy budgets. Survives restarts.
+- **StrategyManager** (`strategies/strategy_manager.py`): Loads and orchestrates multiple strategy instances. Supports hot-reloading.
+- **TradingEngine** (`trading_engine.py`): Executes trades, manages positions, enforces risk limits and strategy budgets.
 
 ## Requirements
 
@@ -83,6 +95,39 @@ trading_rules:
   breakout_down_confidence: 0.70
 ```
 
+### Strategy Instances
+
+Multiple instances of the same strategy type with different configurations:
+
+```yaml
+strategies:
+  # Conservative swing trading
+  swing_conservative:
+    type: swing_trading
+    enabled: true
+    budget: 2000                  # Per-strategy budget
+    zone_proximity_pct: 0.005     # 0.5% proximity
+    min_confidence: 0.75
+
+  # Aggressive swing trading
+  swing_aggressive:
+    type: swing_trading
+    enabled: true
+    budget: 1500
+    zone_proximity_pct: 0.003     # Tighter proximity
+    min_confidence: 0.65
+
+  # Scalping strategies
+  scalp_quick:
+    type: scalping
+    enabled: true
+    budget: 1000
+    imbalance_entry_threshold: 0.7
+    max_ticks_without_progress: 3
+```
+
+**Budget System**: Each strategy has its own budget. Losses reduce available budget; wins recover it up to the cap. Profits beyond the cap don't increase available budget.
+
 ## Usage
 
 ### Start the Bot
@@ -101,7 +146,29 @@ tail -f trading_bot.log
 
 ### Stop the Bot
 
-Press `Ctrl+C` for graceful shutdown.
+Press `Ctrl+C` for graceful shutdown, or type `/quit` in the terminal.
+
+### Interactive Commands
+
+While running, the bot accepts these commands:
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Show all available commands |
+| `/status` | Show bot status and statistics |
+| `/positions` | List current open positions |
+| `/strategies` | List all strategies and their status |
+| `/enable <name>` | Enable a strategy |
+| `/disable <name>` | Disable a strategy |
+| `/reload` | Hot-reload all strategies from disk |
+| `/reload <name>` | Reload a specific strategy |
+| `/discover` | Discover and load new strategy files |
+| `/budgets` | Show per-strategy budget status |
+| `/pnl` | Show P&L breakdown by strategy |
+| `/metrics [symbol]` | Show detailed performance metrics |
+| `/trades [filters]` | Query trade history (e.g., `/trades NVDA winners`) |
+| `/export [type]` | Export to CSV (`trades` or `report`) |
+| `/quit` or `/stop` | Stop the bot gracefully |
 
 ## Trading Logic
 
@@ -176,6 +243,28 @@ To immediately stop all trading:
 1. Set `emergency_stop: true` in config
 2. Or press Ctrl+C for graceful shutdown
 3. Bot will not enter new trades but will monitor existing positions
+
+## Database & Persistence
+
+The bot uses SQLite (`trading_bot.db`) to persist:
+
+- **Open positions**: Restored on restart, reconciled with IB account
+- **Trade history**: All closed trades with P&L
+- **Strategy budgets**: Per-strategy budget state with drawdown tracking
+
+### Position Reconciliation
+
+On startup, the bot reconciles its database with the IB account:
+- Positions in DB that still exist in IB → restored to engine
+- Positions in DB with reduced quantity → updated (partial fill handling)
+- Positions in DB but missing from IB → marked as manually closed
+- IB positions NOT in DB → ignored (these are manual trades)
+
+This allows manual trades to coexist safely with bot-managed positions.
+
+### Order Tagging
+
+Each bot order is tagged with an `orderRef` like `SWINGBOT-1738600000-1`. This identifies bot orders vs manual orders and provides crash safety.
 
 ## Monitoring & Logs
 

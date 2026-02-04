@@ -55,41 +55,94 @@ class MyStrategy(BaseStrategy):
 
 ## Configuration
 
-Add your strategy to `config.yaml`:
+Add your strategy to `config.yaml`. You can run **multiple instances** of the same strategy type with different configurations:
 
 ```yaml
 strategies:
-  swing_trading:
+  # Multiple instances of same strategy type
+  swing_conservative:
+    type: swing_trading           # Strategy type
     enabled: true
-    liquidity_threshold: 1000
-    zone_proximity: 0.10
+    budget: 2000                  # Per-strategy budget ($)
+    zone_proximity_pct: 0.005     # 0.5% - wider proximity
+    min_confidence: 0.75          # Higher confidence required
 
+  swing_aggressive:
+    type: swing_trading           # Same type, different config
+    enabled: true
+    budget: 1500
+    zone_proximity_pct: 0.003     # 0.3% - tighter proximity
+    min_confidence: 0.65          # Lower confidence threshold
+
+  # Backward compatible: if 'type' not specified, instance name = type
   my_strategy:
     enabled: true
+    budget: 1000
     threshold: 0.8
 ```
+
+### Strategy Instance vs Type
+
+- **Instance name**: Unique identifier (e.g., `swing_conservative`, `swing_aggressive`)
+- **Strategy type**: The actual strategy class (e.g., `swing_trading`, `scalping`)
+- Multiple instances of the same type can run with different configurations
+- Each instance has its own budget and tracks P&L separately
+
+## Per-Strategy Budgets
+
+Each strategy instance can have its own budget with drawdown tracking:
+
+```yaml
+strategies:
+  swing_conservative:
+    type: swing_trading
+    budget: 2000    # Maximum budget for this strategy
+```
+
+**Budget model:**
+- **Losses** reduce available budget (increase drawdown)
+- **Wins** recover budget up to the cap (decrease drawdown)
+- **Profits beyond the cap** don't increase available budget
+- Formula: `available = budget - drawdown`
+
+Use `/budgets` command to see current budget status for all strategies.
 
 ## Built-in Strategies
 
 ### SwingTradingStrategy (`swing_trading`)
 
 Analyzes Level 2 order book data to identify support/resistance zones
-and trades bounces/rejections at these levels.
+and trades bounces/rejections at these levels. Uses time-persistence and
+state machine tracking for level confirmation.
 
 **Signals:**
 - `REJECTION_AT_SUPPORT` → LONG_CALL (bullish bounce)
 - `REJECTION_AT_RESISTANCE` → LONG_PUT (bearish rejection)
-- `POTENTIAL_BREAKOUT_UP` → LONG_CALL (momentum)
-- `POTENTIAL_BREAKOUT_DOWN` → LONG_PUT (momentum)
+- `ABSORPTION_BREAKOUT` → Trade in direction of absorption
 
 **Config parameters:**
-- `liquidity_threshold`: Min size for zone identification (default: 1000)
-- `zone_proximity`: Distance to trigger detection in $ (default: 0.10)
-- `imbalance_threshold`: Order imbalance cutoff (default: 0.6)
+- `zone_proximity_pct`: Proximity as % of price (default: 0.005 = 0.5%)
+- `min_confidence`: Minimum confidence to generate signal (default: 0.70)
+- `zscore_threshold`: Z-score for level significance (default: 3.0)
 - `rejection_support_confidence`: Min confidence for support bounce (default: 0.65)
 - `rejection_resistance_confidence`: Min confidence for resistance rejection (default: 0.65)
-- `breakout_up_confidence`: Min confidence for bullish breakout (default: 0.70)
-- `breakout_down_confidence`: Min confidence for bearish breakout (default: 0.70)
+- `imbalance_weight`: How much imbalance affects confidence (default: 0.3)
+
+### ScalpingStrategy (`scalping`)
+
+High-frequency strategy based on order book imbalance. Looks for strong
+directional pressure for quick momentum trades.
+
+**Signals:**
+- Strong positive imbalance (bids >> asks) → LONG_CALL
+- Strong negative imbalance (asks >> bids) → LONG_PUT
+
+**Config parameters:**
+- `imbalance_entry_threshold`: Min imbalance to enter (default: 0.7)
+- `imbalance_exit_threshold`: Imbalance to trigger exit (default: 0.3)
+- `max_ticks_without_progress`: Ticks before time-decay exit (default: 5)
+- `min_confidence`: Minimum confidence (default: 0.70)
+- `zone_proximity_pct`: Proximity as % of price (default: 0.0005 = 0.05%)
 
 ## Strategy Interface
 
