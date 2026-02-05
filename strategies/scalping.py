@@ -87,6 +87,17 @@ class ScalpingStrategy(BaseStrategy):
 
             # Confidence settings
             'min_confidence': 0.70,
+
+            # === Performance Feedback ===
+            'performance_feedback_enabled': True,
+            'performance_lookback_days': 14,    # Window for measuring performance
+            'min_trades_for_feedback': 5,       # Need N trades before adjusting
+            'win_rate_boost_threshold': 0.60,   # Win rate above this → boost confidence
+            'win_rate_penalty_threshold': 0.40, # Win rate below this → reduce confidence
+            'max_confidence_boost': 0.15,       # Max +15% confidence for good performance
+            'max_confidence_penalty': 0.20,     # Max -20% confidence for poor performance
+            'pnl_weight': 0.3,                  # Weight of P&L vs win rate (0.3 = 30%)
+            'pnl_baseline': 30.0,               # $30 avg profit = "good" for scalping
         }
 
     def analyze(self, ticker: Any, current_price: float,
@@ -124,9 +135,15 @@ class ScalpingStrategy(BaseStrategy):
         entry_threshold = self.get_config('imbalance_entry_threshold', 0.7)
         min_confidence = self.get_config('min_confidence', 0.70)
 
+        # Get strategy name for performance lookup
+        strategy_name = self.get_config('instance_name', self.name)
+
         # Strong buy imbalance
         if imbalance >= entry_threshold:
-            confidence = min(1.0, imbalance)  # Use imbalance as confidence
+            raw_confidence = min(1.0, imbalance)  # Use imbalance as confidence
+
+            # Apply performance feedback
+            confidence = self.apply_performance_feedback(raw_confidence, strategy_name)
 
             if confidence >= min_confidence:
                 # Track this as a potential position
@@ -139,20 +156,28 @@ class ScalpingStrategy(BaseStrategy):
                     f"imbalance: {imbalance:+.2f}, confidence: {confidence:.2f}"
                 )
 
+                metadata = {
+                    'imbalance': imbalance,
+                    'tick': tick,
+                    'strategy_type': 'scalping'
+                }
+                if abs(confidence - raw_confidence) > 0.001:
+                    metadata['raw_confidence'] = raw_confidence
+                    metadata['performance_adjusted'] = True
+
                 return StrategySignal(
                     direction=TradeDirection.LONG_CALL,
                     confidence=confidence,
                     pattern_name="imbalance_long",
-                    metadata={
-                        'imbalance': imbalance,
-                        'tick': tick,
-                        'strategy_type': 'scalping'
-                    }
+                    metadata=metadata
                 )
 
         # Strong sell imbalance
         elif imbalance <= -entry_threshold:
-            confidence = min(1.0, abs(imbalance))
+            raw_confidence = min(1.0, abs(imbalance))
+
+            # Apply performance feedback
+            confidence = self.apply_performance_feedback(raw_confidence, strategy_name)
 
             if confidence >= min_confidence:
                 self._start_tracking(symbol, TradeDirection.LONG_PUT,
@@ -164,15 +189,20 @@ class ScalpingStrategy(BaseStrategy):
                     f"imbalance: {imbalance:+.2f}, confidence: {confidence:.2f}"
                 )
 
+                metadata = {
+                    'imbalance': imbalance,
+                    'tick': tick,
+                    'strategy_type': 'scalping'
+                }
+                if abs(confidence - raw_confidence) > 0.001:
+                    metadata['raw_confidence'] = raw_confidence
+                    metadata['performance_adjusted'] = True
+
                 return StrategySignal(
                     direction=TradeDirection.LONG_PUT,
                     confidence=confidence,
                     pattern_name="imbalance_short",
-                    metadata={
-                        'imbalance': imbalance,
-                        'tick': tick,
-                        'strategy_type': 'scalping'
-                    }
+                    metadata=metadata
                 )
 
         return None

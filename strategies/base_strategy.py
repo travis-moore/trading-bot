@@ -9,7 +9,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from enum import Enum
+from datetime import datetime, timedelta
 import statistics
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TradeDirection(Enum):
@@ -341,3 +345,169 @@ class BaseStrategy(ABC):
 
         zscore = self.calculate_zscore(float(volume), [float(v) for v in nearby_volumes])
         return zscore >= threshold
+
+    # =========================================================================
+    # Performance Feedback System
+    # =========================================================================
+
+    def set_trade_db(self, db: Any):
+        """
+        Set trade database for performance feedback.
+
+        Called by the trading engine to inject the database dependency.
+        """
+        self._trade_db = db
+
+    def _get_performance_metrics(self, strategy_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get recent performance metrics for this strategy instance.
+
+        Queries the trade database for closed trades within the lookback window
+        and calculates win rate and P&L statistics.
+
+        Args:
+            strategy_name: The strategy instance name (e.g., 'swing_conservative')
+
+        Returns:
+            Dict with keys: win_rate, total_pnl, avg_pnl, trade_count
+            Returns None if performance feedback is disabled or insufficient data
+        """
+        if not self.get_config('performance_feedback_enabled', False):
+            return None
+
+        if not hasattr(self, '_trade_db') or self._trade_db is None:
+            return None
+
+        lookback_days = self.get_config('performance_lookback_days', 14)
+        min_trades = self.get_config('min_trades_for_feedback', 5)
+
+        # Calculate date range
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=lookback_days)
+
+        try:
+            trades = self._trade_db.query_trades(
+                strategy=strategy_name,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                limit=500,
+            )
+
+            if len(trades) < min_trades:
+                return None
+
+            # Calculate metrics
+            wins = sum(1 for t in trades if t['pnl'] > 0)
+            total_pnl = sum(t['pnl'] for t in trades)
+            avg_pnl = total_pnl / len(trades)
+            win_rate = wins / len(trades)
+
+            return {
+                'win_rate': win_rate,
+                'total_pnl': total_pnl,
+                'avg_pnl': avg_pnl,
+                'trade_count': len(trades),
+                'wins': wins,
+                'losses': len(trades) - wins,
+            }
+
+        except Exception as e:
+            logger.debug(f"Error getting performance metrics: {e}")
+            return None
+
+    def _calculate_performance_modifier(self, strategy_name: str) -> float:
+        """
+        Calculate confidence modifier based on recent performance.
+
+        Uses a combination of win rate and P&L to adjust confidence:
+        - Good performance (high win rate, positive P&L) → boost confidence
+        - Poor performance (low win rate, negative P&L) → reduce confidence
+
+        The modifier is multiplicative: final_confidence = base_confidence * modifier
+
+        Args:
+            strategy_name: The strategy instance name
+
+        Returns:
+            Modifier between (1 - max_penalty) and (1 + max_boost), default 1.0
+        """
+        metrics = self._get_performance_metrics(strategy_name)
+
+        if metrics is None:
+            return 1.0  # No adjustment
+
+        win_rate = metrics['win_rate']
+        avg_pnl = metrics['avg_pnl']
+
+        # Get config parameters
+        boost_threshold = self.get_config('win_rate_boost_threshold', 0.60)
+        penalty_threshold = self.get_config('win_rate_penalty_threshold', 0.40)
+        max_boost = self.get_config('max_confidence_boost', 0.15)
+        max_penalty = self.get_config('max_confidence_penalty', 0.20)
+        pnl_weight = self.get_config('pnl_weight', 0.3)
+
+        modifier = 0.0
+
+        # Win rate component (70% weight by default)
+        win_rate_weight = 1.0 - pnl_weight
+
+        if win_rate >= boost_threshold:
+            # Scale boost linearly from threshold to 1.0
+            boost_range = 1.0 - boost_threshold
+            boost_pct = (win_rate - boost_threshold) / boost_range if boost_range > 0 else 0
+            modifier += max_boost * boost_pct * win_rate_weight
+        elif win_rate <= penalty_threshold:
+            # Scale penalty linearly from threshold to 0.0
+            penalty_range = penalty_threshold
+            penalty_pct = (penalty_threshold - win_rate) / penalty_range if penalty_range > 0 else 0
+            modifier -= max_penalty * penalty_pct * win_rate_weight
+
+        # P&L component (30% weight by default)
+        # Use average P&L relative to a baseline (e.g., $50 avg profit = good)
+        pnl_baseline = self.get_config('pnl_baseline', 50.0)
+        if avg_pnl > 0:
+            # Positive P&L: boost proportional to avg_pnl / baseline, capped
+            pnl_boost = min(max_boost, (avg_pnl / pnl_baseline) * max_boost)
+            modifier += pnl_boost * pnl_weight
+        elif avg_pnl < 0:
+            # Negative P&L: penalty proportional to |avg_pnl| / baseline, capped
+            pnl_penalty = min(max_penalty, (abs(avg_pnl) / pnl_baseline) * max_penalty)
+            modifier -= pnl_penalty * pnl_weight
+
+        # Convert modifier to multiplicative factor
+        # modifier ranges from -max_penalty to +max_boost
+        # We want result to be (1 - max_penalty) to (1 + max_boost)
+        final_modifier = 1.0 + modifier
+
+        # Clamp to reasonable bounds
+        min_modifier = 1.0 - max_penalty
+        max_modifier = 1.0 + max_boost
+        final_modifier = max(min_modifier, min(max_modifier, final_modifier))
+
+        # Log significant adjustments
+        if abs(final_modifier - 1.0) >= 0.05:
+            instance_name = self.get_config('instance_name', strategy_name)
+            logger.info(
+                f"{instance_name}: Performance modifier={final_modifier:.2f} "
+                f"(win_rate={win_rate:.1%}, avg_pnl=${avg_pnl:.2f}, trades={metrics['trade_count']})"
+            )
+
+        return final_modifier
+
+    def apply_performance_feedback(self, confidence: float, strategy_name: str) -> float:
+        """
+        Apply performance-based confidence adjustment.
+
+        Call this method before returning a signal to adjust confidence
+        based on the strategy's recent track record.
+
+        Args:
+            confidence: The raw confidence from pattern detection
+            strategy_name: The strategy instance name for database lookup
+
+        Returns:
+            Adjusted confidence (still clamped to 0.0-1.0)
+        """
+        modifier = self._calculate_performance_modifier(strategy_name)
+        adjusted = confidence * modifier
+        return max(0.0, min(1.0, adjusted))

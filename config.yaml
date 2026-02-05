@@ -89,6 +89,10 @@ strategies:
     linear_decay_days: 30           # Days to full decay
     power_level_proximity_pct: 0.005  # 0.5% - historical + depth alignment
     power_level_confidence_boost: 0.15
+    # Performance Feedback - adjusts confidence based on recent results
+    performance_feedback_enabled: true
+    performance_lookback_days: 14   # Days to consider for win rate/P&L
+    min_trades_for_feedback: 5      # Min trades before adjusting confidence
 
   swing_aggressive:
     type: swing_trading
@@ -109,6 +113,11 @@ strategies:
     exponential_half_life_days: 10
     power_level_proximity_pct: 0.007  # Wider alignment
     power_level_confidence_boost: 0.20  # Bigger boost
+    # Performance Feedback - more sensitive for aggressive strategy
+    performance_feedback_enabled: true
+    performance_lookback_days: 7    # Shorter window for faster adaptation
+    min_trades_for_feedback: 3
+    max_confidence_penalty: 0.25    # Larger penalty for poor performance
 
   # Multiple scalping instances
   scalp_quick:
@@ -118,6 +127,11 @@ strategies:
     max_positions: 1                # Scalping = one position at a time
     imbalance_entry_threshold: 0.7
     max_ticks_without_progress: 3   # Quick exit
+    # Performance Feedback
+    performance_feedback_enabled: true
+    performance_lookback_days: 7    # Shorter window for scalping
+    min_trades_for_feedback: 10     # Scalping has more trades
+    pnl_baseline: 20.0              # Lower baseline for scalping profits
 
   scalp_patient:
     type: scalping
@@ -126,3 +140,8 @@ strategies:
     max_positions: 1                # Scalping = one position at a time
     imbalance_entry_threshold: 0.8  # Higher threshold
     max_ticks_without_progress: 7   # More patience
+    # Performance Feedback
+    performance_feedback_enabled: true
+    performance_lookback_days: 10
+    min_trades_for_feedback: 8
+    pnl_baseline: 25.0

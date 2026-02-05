@@ -50,6 +50,7 @@ class SwingTradingBot:
         self.db = None
         self.strategy_manager = None  # StrategyManager instance if available
         self.tickers = {}  # symbol -> ticker mapping
+        self.price_tickers = {}  # symbol -> ticker mapping (Level 1 Price)
 
         # Command processing
         self._command_thread = None
@@ -162,13 +163,21 @@ class SwingTradingBot:
             self._reconcile_positions()
             
             # Subscribe to market depth for all symbols
+            # Subscribe to market data for all symbols
             for symbol in self.config['symbols']:
+                # Level 2 (Depth)
                 ticker = self.ib.subscribe_market_depth(symbol)
                 if ticker:
                     self.tickers[symbol] = ticker
                     self.logger.info(f"Subscribed to market depth for {symbol}")
                 else:
                     self.logger.warning(f"Failed to subscribe to {symbol}")
+                    self.logger.warning(f"Failed to subscribe to depth for {symbol}")
+                
+                # Level 1 (Price)
+                price_ticker = self.ib.subscribe_market_data(symbol)
+                if price_ticker:
+                    self.price_tickers[symbol] = price_ticker
             
             if not self.tickers:
                 self.logger.error("No market depth subscriptions active")
@@ -331,6 +340,9 @@ class SwingTradingBot:
                 # Get current price
                 current_price = self.ib.get_stock_price(symbol)
                 if current_price is None:
+                price_ticker = self.price_tickers.get(symbol)
+                current_price = self.ib.get_live_price(price_ticker) if price_ticker else None
+                if not current_price:
                     continue
 
                 # Analyze order book for support/resistance (for logging)
@@ -976,6 +988,13 @@ Available commands:
             except Exception as e:
                 self.logger.error(f"Error canceling depth for {symbol}: {e}")
         
+        # Cancel market data subscriptions
+        for symbol, ticker in self.price_tickers.items():
+            try:
+                self.ib.cancel_market_data(ticker.contract)
+            except Exception as e:
+                self.logger.error(f"Error canceling market data for {symbol}: {e}")
+
         # Close database
         if self.db:
             self.db.close()

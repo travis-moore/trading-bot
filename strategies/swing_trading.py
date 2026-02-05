@@ -263,6 +263,18 @@ class SwingTradingStrategy(BaseStrategy):
 
             # Cache Settings
             'historical_cache_ttl_hours': 24,   # Refresh cache after N hours
+
+            # === Performance Feedback ===
+            # Adjusts confidence based on recent win rate and P&L
+            'performance_feedback_enabled': True,
+            'performance_lookback_days': 14,    # Window for measuring performance
+            'min_trades_for_feedback': 5,       # Need N trades before adjusting
+            'win_rate_boost_threshold': 0.60,   # Win rate above this → boost confidence
+            'win_rate_penalty_threshold': 0.40, # Win rate below this → reduce confidence
+            'max_confidence_boost': 0.15,       # Max +15% confidence for good performance
+            'max_confidence_penalty': 0.20,     # Max -20% confidence for poor performance
+            'pnl_weight': 0.3,                  # Weight of P&L vs win rate (0.3 = 30%)
+            'pnl_baseline': 50.0,               # $50 avg profit = "good" baseline
         }
 
     def analyze(self, ticker: Any, current_price: float,
@@ -355,6 +367,16 @@ class SwingTradingStrategy(BaseStrategy):
             return None
 
         direction, min_confidence = self._rules[pattern]
+
+        # Apply performance feedback to adjust confidence based on recent track record
+        strategy_name = self.get_config('instance_name', self.name)
+        raw_confidence = confidence
+        confidence = self.apply_performance_feedback(confidence, strategy_name)
+
+        # Track original confidence in metadata if modified
+        if abs(confidence - raw_confidence) > 0.001:
+            metadata['raw_confidence'] = raw_confidence
+            metadata['performance_adjusted'] = True
 
         # Check confidence threshold
         if confidence < min_confidence:
