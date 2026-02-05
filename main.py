@@ -20,6 +20,7 @@ from ib_wrapper import IBWrapper
 from liquidity_analyzer import LiquidityAnalyzer, Pattern
 from trading_engine import TradingEngine, TradeDirection, Position
 from trade_db import TradeDatabase
+from notifications import DiscordNotifier
 
 # Try to import strategies module
 try:
@@ -56,6 +57,9 @@ class SwingTradingBot:
         self._command_thread = None
         self._pending_command = None
         self._command_lock = threading.Lock()
+        
+        # Notifications
+        self.notifier = None
         
         # Statistics
         self.stats = {
@@ -134,6 +138,12 @@ class SwingTradingBot:
             db_path = self.config.get('database', {}).get('path', 'trading_bot.db')
             self.db = TradeDatabase(db_path)
 
+            # Initialize notifier
+            webhook_url = self.config.get('notifications', {}).get('discord_webhook')
+            if webhook_url:
+                self.notifier = DiscordNotifier(webhook_url)
+                self.notifier.send_message("🤖 **Swing Trading Bot Started**")
+
             # Initialize strategy manager if available
             if STRATEGIES_AVAILABLE and StrategyManager is not None:
                 self.strategy_manager = StrategyManager(self.config)
@@ -162,7 +172,6 @@ class SwingTradingBot:
             # Reconcile DB positions with IB account state
             self._reconcile_positions()
             
-            # Subscribe to market depth for all symbols
             # Subscribe to market data for all symbols
             for symbol in self.config['symbols']:
                 # Level 2 (Depth)
@@ -171,7 +180,6 @@ class SwingTradingBot:
                     self.tickers[symbol] = ticker
                     self.logger.info(f"Subscribed to market depth for {symbol}")
                 else:
-                    self.logger.warning(f"Failed to subscribe to {symbol}")
                     self.logger.warning(f"Failed to subscribe to depth for {symbol}")
                 
                 # Level 1 (Price)
@@ -326,6 +334,13 @@ class SwingTradingBot:
             return True
 
         now_et = datetime.now(ZoneInfo("America/New_York")).time()
+        now = datetime.now(ZoneInfo("America/New_York"))
+        
+        # Check weekend (Saturday=5, Sunday=6)
+        if now.weekday() >= 5:
+            return False
+            
+        now_et = now.time()
         market_open = dt_time(9, 30)
         market_close = dt_time(16, 0)
 
@@ -335,11 +350,22 @@ class SwingTradingBot:
         """Scan all symbols for trading signals"""
         self.stats['scans'] += 1
 
+        # Check daily loss limit
+        if self._check_daily_loss_limit():
+            return
+
+        # Identify paused strategies (per-strategy daily loss limit)
+        paused_strategies = set()
+        if self.strategy_manager:
+            for name in self.strategy_manager.get_all_strategies():
+                if self._check_strategy_loss_limit(name):
+                    paused_strategies.add(name)
+                    if self.stats['scans'] % 60 == 0:  # Log periodically
+                        self.logger.warning(f"Strategy '{name}' paused: hit daily loss limit.")
+
         for symbol, ticker in self.tickers.items():
             try:
                 # Get current price
-                current_price = self.ib.get_stock_price(symbol)
-                if current_price is None:
                 price_ticker = self.price_tickers.get(symbol)
                 current_price = self.ib.get_live_price(price_ticker) if price_ticker else None
                 if not current_price:
@@ -366,6 +392,11 @@ class SwingTradingBot:
                     for signal in signals:
                         # Get strategy instance info from signal metadata
                         strategy_name = signal.metadata.get('strategy', 'unknown')
+                        
+                        # Skip signals from paused strategies
+                        if strategy_name in paused_strategies:
+                            continue
+                            
                         strategy_type = signal.metadata.get('strategy_type', strategy_name)
                         strategy_label = f"{strategy_type}:{strategy_name}" if strategy_type != strategy_name else strategy_name
 
@@ -413,6 +444,36 @@ class SwingTradingBot:
             except Exception as e:
                 self.logger.error(f"Error scanning {symbol}: {e}", exc_info=True)
     
+    def _check_daily_loss_limit(self) -> bool:
+        """Check if daily loss limit has been reached. Returns True if trading should stop."""
+        limit = self.config['safety'].get('daily_loss_limit')
+        if limit is None or limit <= 0:
+            return False
+            
+        today_pnl = self.db.get_today_realized_pnl()
+        if today_pnl <= -limit:
+            if self.stats['scans'] % 60 == 0:  # Log periodically (every ~5 mins)
+                self.logger.warning(f"Daily loss limit reached (${today_pnl:.2f} <= -${limit:.2f}). Pausing new trades.")
+            return True
+            
+        return False
+        
+    def _check_strategy_loss_limit(self, strategy_name: str) -> bool:
+        """Check if a specific strategy has hit its daily loss limit."""
+        if not self.strategy_manager:
+            return False
+            
+        strategy = self.strategy_manager.get_strategy(strategy_name)
+        if not strategy:
+            return False
+            
+        limit = strategy.get_config('daily_loss_limit')
+        if limit is None or limit <= 0:
+            return False
+            
+        today_pnl = self.db.get_today_realized_pnl(strategy=strategy_name)
+        return today_pnl <= -limit
+
     def _handle_trade_signal(self, symbol: str, direction: TradeDirection,
                             signal, current_price: float):
         """Handle a valid trade signal"""
@@ -443,6 +504,9 @@ class SwingTradingBot:
         if success:
             self.stats['trades_entered'] += 1
             self.logger.info("Trade entered successfully")
+            if self.notifier:
+                self.notifier.send_trade_alert(symbol, direction.value, current_price, 
+                                             getattr(signal, 'pattern_name', 'Unknown Pattern'))
         else:
             self.logger.warning("Failed to enter trade")
     
@@ -1002,6 +1066,9 @@ Available commands:
         # Disconnect from IB
         if self.ib:
             self.ib.disconnect()
+
+        if self.notifier:
+            self.notifier.send_message("🛑 **Swing Trading Bot Stopped**")
 
         self.logger.info("Bot shutdown complete")
 

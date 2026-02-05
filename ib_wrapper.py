@@ -148,6 +148,40 @@ class IBWrapper:
             logger.error(f"Error getting stock price for {symbol}: {e}")
             return None
 
+    def subscribe_market_data(self, symbol: str, exchange: str = 'SMART') -> Optional[Ticker]:
+        """
+        Subscribe to live Level 1 market data.
+        Returns a Ticker object that will be automatically updated.
+        """
+        try:
+            contract = Stock(symbol, exchange, 'USD')
+            self.ib.qualifyContracts(contract)
+            # Request generic ticks: 233 (RTVolume), 221 (Mark Price)
+            ticker = self.ib.reqMktData(contract, '', False, False)
+            logger.info(f"Subscribed to Level 1 data for {symbol}")
+            return ticker
+        except Exception as e:
+            logger.error(f"Error subscribing to market data for {symbol}: {e}")
+            return None
+
+    def cancel_market_data(self, contract: Contract):
+        """Cancel market data subscription"""
+        try:
+            self.ib.cancelMktData(contract)
+        except Exception as e:
+            logger.error(f"Error canceling market data: {e}")
+
+    def get_live_price(self, ticker: Ticker) -> Optional[float]:
+        """Extract current price from a live ticker without making new requests."""
+        # Check last price (ticker.last == ticker.last checks for not-NaN)
+        if ticker.last and ticker.last == ticker.last and ticker.last > 0:
+            return ticker.last
+        if ticker.close and ticker.close == ticker.close and ticker.close > 0:
+            return ticker.close
+        if ticker.bid > 0 and ticker.ask > 0:
+            return (ticker.bid + ticker.ask) / 2
+        return None
+
     def get_historical_bars(
         self,
         symbol: str,

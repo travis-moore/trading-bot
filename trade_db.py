@@ -1148,6 +1148,21 @@ class TradeDatabase:
 
         return results
 
+    def get_today_realized_pnl(self, strategy: Optional[str] = None) -> float:
+        """Get total realized P&L for the current day (local time)."""
+        today = datetime.now().date().isoformat()
+        
+        query = "SELECT SUM(pnl) as total_pnl FROM trade_history WHERE DATE(exit_time) = ?"
+        params = [today]
+        
+        if strategy:
+            query += " AND strategy = ?"
+            params.append(strategy)
+            
+        cursor = self.conn.execute(query, params)
+        row = cursor.fetchone()
+        return row['total_pnl'] or 0.0
+
     def get_symbol_breakdown(
         self,
         start_date: Optional[str] = None,
