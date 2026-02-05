@@ -167,11 +167,11 @@ class SwingTradingStrategy(BaseStrategy):
         self._rules = {
             Pattern.REJECTION_AT_SUPPORT: (
                 TradeDirection.LONG_CALL,
-                self.get_config('rejection_support_confidence', 0.65)
+                self.get_config('rejection_support_confidence', 0.65) # Default, overridden in analyze
             ),
             Pattern.REJECTION_AT_RESISTANCE: (
                 TradeDirection.LONG_PUT,
-                self.get_config('rejection_resistance_confidence', 0.65)
+                self.get_config('rejection_resistance_confidence', 0.65) # Default, overridden in analyze
             ),
             Pattern.ABSORPTION_BREAKOUT_UP: (
                 TradeDirection.LONG_CALL,
@@ -308,7 +308,7 @@ class SwingTradingStrategy(BaseStrategy):
 
         # Check for spoofing
         spoofed_levels = self._detect_spoofing(symbol, analysis, current_price)
-        instance_name = self.get_config('instance_name', self.name)
+        instance_name = self.get_config('instance_name', self.name, symbol=symbol)
         for level_price in spoofed_levels:
             logger.info(f"{instance_name} ({symbol}): Spoofing detected at ${level_price:.2f}")
 
@@ -318,7 +318,7 @@ class SwingTradingStrategy(BaseStrategy):
 
         # Update historical bounce levels (cached, refreshes when stale)
         if self.get_config('historical_bounce_enabled', True):
-            self._update_historical_levels(symbol, current_price)
+            self._update_historical_levels(symbol, current_price, symbol)
 
         # Detect power levels (historical + depth convergence)
         all_depth_levels = confirmed_support + confirmed_resistance
@@ -350,7 +350,7 @@ class SwingTradingStrategy(BaseStrategy):
             pattern_name = pattern.value
 
         # Use instance_name from config for logging (falls back to strategy type name)
-        instance_name = self.get_config('instance_name', self.name)
+        instance_name = self.get_config('instance_name', self.name, symbol=symbol)
         logger.info(
             f"{instance_name} ({symbol}): price=${current_price:.2f}, "
             f"support={support_str}, resistance={resistance_str}, "
@@ -366,12 +366,20 @@ class SwingTradingStrategy(BaseStrategy):
         if pattern not in self._rules:
             return None
 
-        direction, min_confidence = self._rules[pattern]
+        # Get rule direction and confidence (with symbol override support)
+        direction, _ = self._rules[pattern]
+        
+        # Re-fetch min_confidence with symbol context
+        rule_key_map = {
+            Pattern.REJECTION_AT_SUPPORT: 'rejection_support_confidence',
+            Pattern.REJECTION_AT_RESISTANCE: 'rejection_resistance_confidence',
+            Pattern.ABSORPTION_BREAKOUT_UP: 'absorption_confidence',
+            Pattern.ABSORPTION_BREAKOUT_DOWN: 'absorption_confidence',
+        }
+        min_confidence = self.get_config(rule_key_map.get(pattern, 'min_confidence'), 0.65, symbol=symbol)
 
-        # Apply performance feedback to adjust confidence based on recent track record
-        strategy_name = self.get_config('instance_name', self.name)
         raw_confidence = confidence
-        confidence = self.apply_performance_feedback(confidence, strategy_name)
+        confidence = self.apply_performance_feedback(confidence, instance_name)
 
         # Track original confidence in metadata if modified
         if abs(confidence - raw_confidence) > 0.001:
@@ -425,7 +433,7 @@ class SwingTradingStrategy(BaseStrategy):
         ask_liquidity = {ask.price: ask.size for ask in ticker.domAsks if ask.price > 0}
 
         # Calculate exclusion zone
-        exclusion_pct = self.get_config('exclusion_zone_pct', 0.005)
+        exclusion_pct = self.get_config('exclusion_zone_pct', 0.005, symbol=symbol)
 
         # Identify significant zones with Z-score filtering
         support_zones = self._identify_zones_zscore(
@@ -451,7 +459,7 @@ class SwingTradingStrategy(BaseStrategy):
         }
 
     def _identify_zones_zscore(self, liquidity: Dict[float, int], zone_type: str,
-                                current_price: float, exclusion_pct: float) -> List[LiquidityZone]:
+                                current_price: float, exclusion_pct: float, symbol: str = None) -> List[LiquidityZone]:
         """
         Identify significant liquidity zones using Z-score filtering.
 
@@ -469,9 +477,9 @@ class SwingTradingStrategy(BaseStrategy):
             return []
 
         # Calculate local statistics for Z-score
-        zscore_levels = self.get_config('zscore_levels_count', 10)
-        zscore_threshold = self.get_config('zscore_threshold', 3.0)
-        liquidity_threshold = self.get_config('liquidity_threshold', 1000)
+        zscore_levels = self.get_config('zscore_levels_count', 10, symbol=symbol)
+        zscore_threshold = self.get_config('zscore_threshold', 3.0, symbol=symbol)
+        liquidity_threshold = self.get_config('liquidity_threshold', 1000, symbol=symbol)
         max_size = max(volumes) if volumes else 1
 
         for i, price in enumerate(prices):
@@ -482,7 +490,7 @@ class SwingTradingStrategy(BaseStrategy):
                 continue
 
             # Skip if in exclusion zone
-            if self.is_in_exclusion_zone(current_price, price, exclusion_pct):
+            if self.is_in_exclusion_zone(current_price, price, exclusion_pct, symbol=symbol):
                 continue
 
             # Get nearby volumes for local Z-score calculation
@@ -519,7 +527,7 @@ class SwingTradingStrategy(BaseStrategy):
         Levels must persist for 5 minutes to become confirmed.
         """
         tracked = self._tracked_levels[symbol]
-        confirmation_time = timedelta(minutes=self.get_config('level_confirmation_minutes', 5))
+        confirmation_time = timedelta(minutes=self.get_config('level_confirmation_minutes', 5, symbol=symbol))
 
         # Track all significant zones from current analysis
         all_zones = analysis['support'] + analysis['resistance']
@@ -583,7 +591,7 @@ class SwingTradingStrategy(BaseStrategy):
         """
         spoofed = []
         tracked = self._tracked_levels[symbol]
-        spoof_distance = self.get_config('spoofing_distance_ticks', 3)
+        spoof_distance = self.get_config('spoofing_distance_ticks', 3, symbol=symbol)
 
         # Calculate approximate tick size (0.01 for most stocks)
         tick_size = 0.01
@@ -634,9 +642,9 @@ class SwingTradingStrategy(BaseStrategy):
             or None if only consolidation detected
         """
         imbalance = analysis['imbalance']
-        proximity_pct = self.get_config('zone_proximity_pct', 0.005)
-        absorption_threshold = self.get_config('absorption_threshold_pct', 0.20)
-        rejection_flip = self.get_config('rejection_imbalance_flip', 0.60)
+        proximity_pct = self.get_config('zone_proximity_pct', 0.005, symbol=symbol)
+        absorption_threshold = self.get_config('absorption_threshold_pct', 0.20, symbol=symbol)
+        rejection_flip = self.get_config('rejection_imbalance_flip', 0.60, symbol=symbol)
 
         # Check support zones
         for level in confirmed_support:
@@ -645,7 +653,7 @@ class SwingTradingStrategy(BaseStrategy):
                 if self._is_absorbing(symbol, level, absorption_threshold):
                     confidence = self._adjust_confidence_by_imbalance(
                         level.current_volume / level.initial_volume,
-                        imbalance, bullish=True
+                        imbalance, bullish=True, symbol=symbol
                     )
                     return (
                         Pattern.ABSORPTION_BREAKOUT_UP,
@@ -661,7 +669,7 @@ class SwingTradingStrategy(BaseStrategy):
                     if imbalance > -rejection_flip:  # Not heavily bearish
                         base_confidence = min(1.0, level.current_volume / 10000)
                         confidence = self._adjust_confidence_by_imbalance(
-                            base_confidence, imbalance, bullish=True
+                            base_confidence, imbalance, bullish=True, symbol=symbol
                         )
                         return (
                             Pattern.REJECTION_AT_SUPPORT,
@@ -688,7 +696,7 @@ class SwingTradingStrategy(BaseStrategy):
                 if self._is_absorbing(symbol, level, absorption_threshold):
                     confidence = self._adjust_confidence_by_imbalance(
                         level.current_volume / level.initial_volume,
-                        imbalance, bullish=False
+                        imbalance, bullish=False, symbol=symbol
                     )
                     return (
                         Pattern.ABSORPTION_BREAKOUT_DOWN,
@@ -704,7 +712,7 @@ class SwingTradingStrategy(BaseStrategy):
                     if imbalance < rejection_flip:  # Not heavily bullish
                         base_confidence = min(1.0, level.current_volume / 10000)
                         confidence = self._adjust_confidence_by_imbalance(
-                            base_confidence, imbalance, bullish=False
+                            base_confidence, imbalance, bullish=False, symbol=symbol
                         )
                         return (
                             Pattern.REJECTION_AT_RESISTANCE,
@@ -748,14 +756,14 @@ class SwingTradingStrategy(BaseStrategy):
             return None
 
         imbalance = analysis['imbalance']
-        proximity_pct = self.get_config('zone_proximity_pct', 0.005)
-        confidence_boost = self.get_config('power_level_confidence_boost', 0.15)
-        rejection_flip = self.get_config('rejection_imbalance_flip', 0.60)
+        proximity_pct = self.get_config('zone_proximity_pct', 0.005, symbol=symbol)
+        confidence_boost = self.get_config('power_level_confidence_boost', 0.15, symbol=symbol)
+        rejection_flip = self.get_config('rejection_imbalance_flip', 0.60, symbol=symbol)
 
         for pl in power_levels:
             # Skip invalid (weakened) power levels
             if not pl.is_valid:
-                instance_name = self.get_config('instance_name', self.name)
+                instance_name = self.get_config('instance_name', self.name, symbol=symbol)
                 logger.debug(
                     f"{instance_name} ({symbol}): Skipping weakened power level at ${pl.price:.2f}"
                 )
@@ -772,7 +780,7 @@ class SwingTradingStrategy(BaseStrategy):
                     if imbalance > -rejection_flip:  # Not heavily bearish
                         confidence = min(1.0, pl.combined_confidence + confidence_boost)
 
-                        instance_name = self.get_config('instance_name', self.name)
+                        instance_name = self.get_config('instance_name', self.name, symbol=symbol)
                         logger.info(
                             f"{instance_name} ({symbol}): POWER LEVEL bounce at ${pl.price:.2f} "
                             f"(historical bounces: {pl.historical_level.bounce_count}, "
@@ -799,7 +807,7 @@ class SwingTradingStrategy(BaseStrategy):
                     if imbalance < rejection_flip:  # Not heavily bullish
                         confidence = min(1.0, pl.combined_confidence + confidence_boost)
 
-                        instance_name = self.get_config('instance_name', self.name)
+                        instance_name = self.get_config('instance_name', self.name, symbol=symbol)
                         logger.info(
                             f"{instance_name} ({symbol}): POWER LEVEL rejection at ${pl.price:.2f} "
                             f"(historical bounces: {pl.historical_level.bounce_count}, "
@@ -854,13 +862,13 @@ class SwingTradingStrategy(BaseStrategy):
         return (total_bid - total_ask) / total
 
     def _adjust_confidence_by_imbalance(self, base_confidence: float,
-                                         imbalance: float, bullish: bool) -> float:
+                                         imbalance: float, bullish: bool, symbol: str = None) -> float:
         """
         Adjust confidence based on whether imbalance confirms signal.
 
         Imbalance is a confidence MULTIPLIER, not an entry trigger.
         """
-        weight = self.get_config('imbalance_weight', 0.3)
+        weight = self.get_config('imbalance_weight', 0.3, symbol=symbol)
 
         if bullish:
             adjustment = imbalance * weight
@@ -879,7 +887,7 @@ class SwingTradingStrategy(BaseStrategy):
         if previous is None:
             return False
 
-        proximity = self.get_proximity_distance(current_price)
+        proximity = self.get_proximity_distance(current_price, symbol=symbol)
         was_near = abs(previous - support_level) <= proximity
         moving_up = current_price > previous
         min_move = proximity * 0.2
@@ -896,7 +904,7 @@ class SwingTradingStrategy(BaseStrategy):
         if previous is None:
             return False
 
-        proximity = self.get_proximity_distance(current_price)
+        proximity = self.get_proximity_distance(current_price, symbol=symbol)
         was_near = abs(previous - resistance_level) <= proximity
         moving_down = current_price < previous
         min_move = proximity * 0.2
@@ -950,7 +958,7 @@ class SwingTradingStrategy(BaseStrategy):
         """Set trade database for caching."""
         self._trade_db = db
 
-    def _update_historical_levels(self, symbol: str, current_price: float):
+    def _update_historical_levels(self, symbol: str, current_price: float, config_symbol: str = None):
         """
         Update historical bounce levels for a symbol if needed.
 
@@ -977,7 +985,7 @@ class SwingTradingStrategy(BaseStrategy):
             cached = self._trade_db.get_cached_bars(symbol, bar_size, cache_ttl)
             if cached:
                 bars = cached
-                logger.debug(f"{self.get_config('instance_name', self.name)}: Using cached bars for {symbol}")
+                logger.debug(f"{self.get_config('instance_name', self.name, symbol=config_symbol)}: Using cached bars for {symbol}")
 
         # Fetch from IB if no cache
         if bars is None and self._ib_wrapper:
@@ -1006,16 +1014,16 @@ class SwingTradingStrategy(BaseStrategy):
                     self._trade_db.cache_historical_bars(symbol, bar_size, ib_bars)
 
         if not bars:
-            logger.debug(f"{self.get_config('instance_name', self.name)}: No historical bars for {symbol}")
+            logger.debug(f"{self.get_config('instance_name', self.name, symbol=config_symbol)}: No historical bars for {symbol}")
             return
 
         # Identify swing points and bounce levels
-        swing_points = self._identify_swing_points(bars)
-        bounce_levels = self._identify_bounce_levels(swing_points, current_price)
+        swing_points = self._identify_swing_points(bars, symbol=config_symbol)
+        bounce_levels = self._identify_bounce_levels(swing_points, current_price, symbol=config_symbol)
 
         # Apply decay to all levels
         for level in bounce_levels:
-            level.decayed_strength = self._apply_decay(level, now)
+            level.decayed_strength = self._apply_decay(level, now, symbol=config_symbol)
 
         # Sort by decayed strength and limit
         bounce_levels.sort(key=lambda l: l.decayed_strength, reverse=True)
@@ -1023,14 +1031,14 @@ class SwingTradingStrategy(BaseStrategy):
         self._historical_levels[symbol] = bounce_levels[:max_levels]
         self._historical_last_update[symbol] = now
 
-        instance_name = self.get_config('instance_name', self.name)
+        instance_name = self.get_config('instance_name', self.name, symbol=config_symbol)
         if bounce_levels:
             logger.info(
                 f"{instance_name} ({symbol}): Identified {len(bounce_levels)} historical bounce levels "
                 f"from {len(swing_points)} swing points"
             )
 
-    def _identify_swing_points(self, bars: List[Dict]) -> List[SwingPoint]:
+    def _identify_swing_points(self, bars: List[Dict], symbol: str = None) -> List[SwingPoint]:
         """
         Identify swing highs and lows using a local extremum window.
 
@@ -1041,7 +1049,7 @@ class SwingTradingStrategy(BaseStrategy):
         the N bars before and after it.
         """
         swing_points = []
-        window = self.get_config('swing_window', 5)
+        window = self.get_config('swing_window', 5, symbol=symbol)
         half_window = window // 2
 
         if len(bars) < window:
@@ -1084,15 +1092,15 @@ class SwingTradingStrategy(BaseStrategy):
         return swing_points
 
     def _identify_bounce_levels(self, swing_points: List[SwingPoint],
-                                 current_price: float) -> List[HistoricalBounceLevel]:
+                                 current_price: float, symbol: str = None) -> List[HistoricalBounceLevel]:
         """
         Cluster swing points into bounce levels.
 
         A bounce level is formed when 2+ swing points occur within
         proximity_pct of each other.
         """
-        proximity_pct = self.get_config('bounce_proximity_pct', 0.001)
-        min_bounces = self.get_config('min_bounces', 2)
+        proximity_pct = self.get_config('bounce_proximity_pct', 0.001, symbol=symbol)
+        min_bounces = self.get_config('min_bounces', 2, symbol=symbol)
 
         # Separate swing highs and lows
         swing_highs = [sp for sp in swing_points if sp.swing_type == 'high']
@@ -1169,28 +1177,28 @@ class SwingTradingStrategy(BaseStrategy):
         return levels
 
     def _apply_decay(self, level: HistoricalBounceLevel,
-                     current_time: Optional[datetime] = None) -> float:
+                     current_time: Optional[datetime] = None, symbol: str = None) -> float:
         """
         Apply time decay to a historical level.
 
         Supports linear or exponential decay based on config.
         """
         current_time = current_time or datetime.now()
-        decay_type = self.get_config('decay_type', 'linear')
+        decay_type = self.get_config('decay_type', 'linear', symbol=symbol)
 
         if decay_type == 'exponential':
-            return self._apply_exponential_decay(level, current_time)
+            return self._apply_exponential_decay(level, current_time, symbol=symbol)
         else:
-            return self._apply_linear_decay(level, current_time)
+            return self._apply_linear_decay(level, current_time, symbol=symbol)
 
     def _apply_linear_decay(self, level: HistoricalBounceLevel,
-                            current_time: datetime) -> float:
+                            current_time: datetime, symbol: str = None) -> float:
         """
         Apply linear time decay to a historical level.
 
         Formula: decayed_strength = base_strength * (1 - age_days / decay_days)
         """
-        decay_days = self.get_config('linear_decay_days', 30)
+        decay_days = self.get_config('linear_decay_days', 30, symbol=symbol)
 
         # Use most recent test for decay calculation
         age = current_time - level.last_test
@@ -1200,7 +1208,7 @@ class SwingTradingStrategy(BaseStrategy):
         return level.strength * decay_factor
 
     def _apply_exponential_decay(self, level: HistoricalBounceLevel,
-                                  current_time: datetime) -> float:
+                                  current_time: datetime, symbol: str = None) -> float:
         """
         Apply exponential time decay to a historical level.
 
@@ -1208,7 +1216,7 @@ class SwingTradingStrategy(BaseStrategy):
         """
         import math
 
-        half_life_days = self.get_config('exponential_half_life_days', 15.0)
+        half_life_days = self.get_config('exponential_half_life_days', 15.0, symbol=symbol)
 
         age = current_time - level.last_test
         age_days = age.total_seconds() / 86400
@@ -1230,7 +1238,7 @@ class SwingTradingStrategy(BaseStrategy):
             return []
 
         power_levels = []
-        proximity_pct = self.get_config('power_level_proximity_pct', 0.005)
+        proximity_pct = self.get_config('power_level_proximity_pct', 0.005, symbol=symbol)
 
         for hist_level in historical_levels:
             for depth_level in depth_levels:
@@ -1244,7 +1252,7 @@ class SwingTradingStrategy(BaseStrategy):
                 if proximity <= proximity_pct:
                     # Calculate depth strength relative to average
                     avg_depth = self._get_average_depth_volume(symbol)
-                    depth_strength = self._categorize_depth_strength(
+                    depth_strength = self._categorize_depth_strength(symbol,
                         depth_level.current_volume, avg_depth
                     )
 
@@ -1279,14 +1287,14 @@ class SwingTradingStrategy(BaseStrategy):
         volumes = [level.current_volume for level in tracked.values()]
         return sum(volumes) / len(volumes) if volumes else 10000
 
-    def _categorize_depth_strength(self, volume: int, average_volume: float) -> str:
+    def _categorize_depth_strength(self, symbol: str, volume: int, average_volume: float) -> str:
         """
         Categorize depth volume relative to average.
 
         Returns 'weak', 'average', or 'strong'.
         """
-        weak_threshold = self.get_config('weak_depth_threshold', 0.5)
-        strong_threshold = self.get_config('strong_depth_threshold', 1.5)
+        weak_threshold = self.get_config('weak_depth_threshold', 0.5, symbol=symbol)
+        strong_threshold = self.get_config('strong_depth_threshold', 1.5, symbol=symbol)
 
         ratio = volume / average_volume if average_volume > 0 else 0
 

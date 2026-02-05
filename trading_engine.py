@@ -80,6 +80,7 @@ class Position:
     strategy_name: Optional[str] = None  # Which strategy opened this position
     stop_loss_trade: Optional[Any] = None  # Attached stop loss order
     take_profit_trade: Optional[Any] = None  # Attached take profit order
+    peak_price: Optional[float] = None  # Highest/Lowest price seen since entry (for trailing stop)
 
 
 class TradingEngine:
@@ -524,6 +525,7 @@ class TradingEngine:
                 'entry_order_id': None,
                 'order_ref': order_ref,
                 'status': 'pending_fill',
+                'peak_price': entry_price,
             })
 
         # Place bracket order (entry + stop loss + take profit)
@@ -727,6 +729,7 @@ class TradingEngine:
             strategy_name=pending.strategy_name,
             stop_loss_trade=pending.stop_loss_trade,
             take_profit_trade=pending.take_profit_trade,
+            peak_price=fill_price,
         )
 
         self.positions.append(position)
@@ -861,6 +864,21 @@ class TradingEngine:
         if current_price <= 0:
             return False, ""
         
+        # Update peak price for trailing stop logic
+        if position.peak_price is None:
+            position.peak_price = position.entry_price
+
+        if position.direction == TradeDirection.LONG_CALL:
+            if current_price > position.peak_price:
+                position.peak_price = current_price
+                if self.db and position.db_id:
+                    self.db.update_position_peak_price(position.db_id, current_price)
+        elif position.direction == TradeDirection.LONG_PUT:
+            if current_price < position.peak_price and current_price > 0:
+                position.peak_price = current_price
+                if self.db and position.db_id:
+                    self.db.update_position_peak_price(position.db_id, current_price)
+
         # Check profit target
         if current_price >= position.profit_target:
             return True, f"Profit target reached (${current_price:.2f} >= ${position.profit_target:.2f})"
@@ -868,6 +886,38 @@ class TradingEngine:
         # Check stop loss
         if current_price <= position.stop_loss:
             return True, f"Stop loss hit (${current_price:.2f} <= ${position.stop_loss:.2f})"
+        
+        # Check trailing stop
+        if self.config.get('trailing_stop_enabled', False):
+            activation_pct = self.config.get('trailing_stop_activation_pct', 0.10)
+            distance_pct = self.config.get('trailing_stop_distance_pct', 0.05)
+            
+            if position.direction == TradeDirection.LONG_CALL:
+                # Calculate current profit pct based on peak
+                peak_profit_pct = (position.peak_price - position.entry_price) / position.entry_price
+                
+                if peak_profit_pct >= activation_pct:
+                    # Trailing active
+                    trail_price = position.peak_price * (1.0 - distance_pct)
+                    # Ensure trail doesn't move stop down (only up)
+                    effective_stop = max(position.stop_loss, trail_price)
+                    
+                    if current_price <= effective_stop:
+                        return True, f"Trailing stop hit (${current_price:.2f} <= ${effective_stop:.2f}, peak: ${position.peak_price:.2f})"
+            
+            elif position.direction == TradeDirection.LONG_PUT:
+                # Calculate current profit pct based on peak (lowest price)
+                # For puts, profit is when price goes down
+                peak_profit_pct = (position.entry_price - position.peak_price) / position.entry_price
+                
+                if peak_profit_pct >= activation_pct:
+                    # Trailing active
+                    trail_price = position.peak_price * (1.0 + distance_pct)
+                    # Ensure trail doesn't move stop up (only down)
+                    effective_stop = min(position.stop_loss, trail_price)
+                    
+                    if current_price >= effective_stop:
+                        return True, f"Trailing stop hit (${current_price:.2f} >= ${effective_stop:.2f}, peak: ${position.peak_price:.2f})"
         
         # Check time-based exit
         days_held = (datetime.now() - position.entry_time).days

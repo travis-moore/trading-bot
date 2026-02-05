@@ -34,6 +34,9 @@ risk_management:
   position_size_pct: 0.02        # Position size as % of account (2%)
   profit_target_pct: 0.50        # Take profit at 50% gain
   stop_loss_pct: 0.30            # Stop loss at 30% loss
+  trailing_stop_enabled: true    # Enable trailing stops
+  trailing_stop_activation_pct: 0.10 # Start trailing after 10% profit
+  trailing_stop_distance_pct: 0.05   # Trail by 5% from peak
   max_hold_days: 30              # Maximum days to hold position
 
 # Order Management
@@ -91,6 +94,10 @@ strategies:
     power_level_proximity_pct: 0.005  # 0.5% - historical + depth alignment
     power_level_confidence_boost: 0.15
     # Performance Feedback - adjusts confidence based on recent results
+    # Symbol Overrides
+    symbol_overrides:
+      NVDA:
+        zone_proximity_pct: 0.008   # Wider zones for NVDA due to volatility
     performance_feedback_enabled: true
     performance_lookback_days: 14   # Days to consider for win rate/P&L
     min_trades_for_feedback: 5      # Min trades before adjusting confidence

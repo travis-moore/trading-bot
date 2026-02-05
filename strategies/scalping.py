@@ -132,11 +132,11 @@ class ScalpingStrategy(BaseStrategy):
             return exit_signal
 
         # Check for entry signal based on imbalance
-        entry_threshold = self.get_config('imbalance_entry_threshold', 0.7)
-        min_confidence = self.get_config('min_confidence', 0.70)
+        entry_threshold = self.get_config('imbalance_entry_threshold', 0.7, symbol=symbol)
+        min_confidence = self.get_config('min_confidence', 0.70, symbol=symbol)
 
         # Get strategy name for performance lookup
-        strategy_name = self.get_config('instance_name', self.name)
+        strategy_name = self.get_config('instance_name', self.name, symbol=symbol)
 
         # Strong buy imbalance
         if imbalance >= entry_threshold:
@@ -150,7 +150,7 @@ class ScalpingStrategy(BaseStrategy):
                 self._start_tracking(symbol, TradeDirection.LONG_CALL,
                                      current_price, tick, imbalance)
 
-                instance_name = self.get_config('instance_name', self.name)
+                instance_name = self.get_config('instance_name', self.name, symbol=symbol)
                 logger.info(
                     f"{instance_name} ({symbol}): LONG signal - "
                     f"imbalance: {imbalance:+.2f}, confidence: {confidence:.2f}"
@@ -183,7 +183,7 @@ class ScalpingStrategy(BaseStrategy):
                 self._start_tracking(symbol, TradeDirection.LONG_PUT,
                                      current_price, tick, imbalance)
 
-                instance_name = self.get_config('instance_name', self.name)
+                instance_name = self.get_config('instance_name', self.name, symbol=symbol)
                 logger.info(
                     f"{instance_name} ({symbol}): SHORT signal - "
                     f"imbalance: {imbalance:+.2f}, confidence: {confidence:.2f}"
@@ -249,9 +249,9 @@ class ScalpingStrategy(BaseStrategy):
             return None
 
         position = self._positions[symbol]
-        max_ticks = self.get_config('max_ticks_without_progress', 5)
-        min_progress = self.get_config('min_progress_pct', 0.001)
-        exit_threshold = self.get_config('imbalance_exit_threshold', 0.3)
+        max_ticks = self.get_config('max_ticks_without_progress', 5, symbol=symbol)
+        min_progress = self.get_config('min_progress_pct', 0.001, symbol=symbol)
+        exit_threshold = self.get_config('imbalance_exit_threshold', 0.3, symbol=symbol)
 
         ticks_elapsed = tick - position.entry_tick
 
@@ -282,7 +282,7 @@ class ScalpingStrategy(BaseStrategy):
             if symbol in self._entry_prices:
                 del self._entry_prices[symbol]
 
-            instance_name = self.get_config('instance_name', self.name)
+            instance_name = self.get_config('instance_name', self.name, symbol=symbol)
             logger.info(
                 f"{instance_name} ({symbol}): EXIT signal - "
                 f"reason: {exit_reason}, ticks: {ticks_elapsed}, progress: {progress:+.2%}"
@@ -312,7 +312,7 @@ class ScalpingStrategy(BaseStrategy):
         """Track position when opened."""
         symbol = position.contract.symbol
         if symbol in self._positions:
-            instance_name = self.get_config('instance_name', self.name)
+            instance_name = self.get_config('instance_name', self.name, symbol=symbol)
             logger.debug(f"{instance_name}: tracking position {symbol}")
 
     def on_position_closed(self, position: Any, reason: str):
@@ -325,5 +325,5 @@ class ScalpingStrategy(BaseStrategy):
         if symbol in self._tick_counts:
             del self._tick_counts[symbol]
 
-        instance_name = self.get_config('instance_name', self.name)
+        instance_name = self.get_config('instance_name', self.name, symbol=symbol)
         logger.debug(f"{instance_name}: position {symbol} closed - {reason}")

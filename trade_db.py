@@ -48,6 +48,7 @@ class TradeDatabase:
                 entry_order_id  INTEGER,
                 order_ref       TEXT NOT NULL,
                 status          TEXT NOT NULL DEFAULT 'open',
+                peak_price      REAL,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -111,6 +112,7 @@ class TradeDatabase:
         """)
         self.conn.commit()
         self._migrate_add_strategy_column()
+        self._migrate_add_peak_price_column()
 
     def _migrate_add_strategy_column(self):
         """Add strategy column to existing tables if missing (migration)."""
@@ -142,6 +144,17 @@ class TradeDatabase:
             )
             self.conn.commit()
 
+    def _migrate_add_peak_price_column(self):
+        """Add peak_price column to positions table if missing."""
+        cursor = self.conn.execute("PRAGMA table_info(positions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if 'peak_price' not in columns:
+            logger.info("Migrating: adding peak_price column to positions table")
+            self.conn.execute(
+                "ALTER TABLE positions ADD COLUMN peak_price REAL"
+            )
+            self.conn.commit()
+
     def close(self):
         """Close the database connection."""
         if self.conn:
@@ -165,17 +178,21 @@ class TradeDatabase:
         if 'strategy' not in data:
             data['strategy'] = 'swing_trading'
 
+        # Default peak_price to entry_price if not provided
+        if 'peak_price' not in data and 'entry_price' in data:
+            data['peak_price'] = data['entry_price']
+
         cursor = self.conn.execute("""
             INSERT INTO positions (
                 symbol, local_symbol, con_id, strike, expiry, right, exchange,
                 entry_price, entry_time, quantity, direction,
                 stop_loss, profit_target, pattern, strategy,
-                entry_order_id, order_ref, status
+                entry_order_id, order_ref, status, peak_price
             ) VALUES (
                 :symbol, :local_symbol, :con_id, :strike, :expiry, :right, :exchange,
                 :entry_price, :entry_time, :quantity, :direction,
                 :stop_loss, :profit_target, :pattern, :strategy,
-                :entry_order_id, :order_ref, :status
+                :entry_order_id, :order_ref, :status, :peak_price
             )
         """, data)
         self.conn.commit()
@@ -211,6 +228,14 @@ class TradeDatabase:
         self.conn.execute(
             "UPDATE positions SET quantity = ?, updated_at = datetime('now') WHERE id = ?",
             (quantity, position_id)
+        )
+        self.conn.commit()
+
+    def update_position_peak_price(self, position_id: int, peak_price: float):
+        """Update the peak price reached for a position (for trailing stops)."""
+        self.conn.execute(
+            "UPDATE positions SET peak_price = ?, updated_at = datetime('now') WHERE id = ?",
+            (peak_price, position_id)
         )
         self.conn.commit()
 
@@ -1162,6 +1187,36 @@ class TradeDatabase:
         cursor = self.conn.execute(query, params)
         row = cursor.fetchone()
         return row['total_pnl'] or 0.0
+
+    def get_consecutive_losses(self, strategy: Optional[str] = None) -> int:
+        """
+        Count consecutive losses (pnl < 0) from most recent trades backwards.
+        Excludes manual closes and reconciliation entries.
+        """
+        conditions = ["pnl IS NOT NULL", "exit_reason NOT IN ('manual_close', 'reconciliation_not_found')"]
+        params = []
+
+        if strategy:
+            conditions.append("strategy = ?")
+            params.append(strategy)
+
+        where_clause = " AND ".join(conditions)
+        
+        # Get most recent 50 trades to check for streak
+        query = f"""
+            SELECT pnl FROM trade_history 
+            WHERE {where_clause}
+            ORDER BY exit_time DESC LIMIT 50
+        """
+        cursor = self.conn.execute(query, params)
+        
+        losses = 0
+        for row in cursor.fetchall():
+            if row['pnl'] < 0:
+                losses += 1
+            else:
+                break
+        return losses
 
     def get_symbol_breakdown(
         self,

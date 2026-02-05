@@ -324,6 +324,7 @@ class SwingTradingBot:
                     db_id=row['id'],
                     order_ref=row['order_ref'],
                     strategy_name=strategy,
+                    peak_price=row['peak_price'] if 'peak_price' in row.keys() else row['entry_price'],
                 )
                 self.engine.positions.append(position)
                 restored += 1
@@ -368,6 +369,10 @@ class SwingTradingBot:
         if self._check_daily_loss_limit():
             return
 
+        # Check global consecutive loss limit (Strategy Health Check)
+        if self._check_global_consecutive_losses():
+            return
+
         # Identify paused strategies (per-strategy daily loss limit)
         paused_strategies = set()
         if self.strategy_manager:
@@ -376,6 +381,16 @@ class SwingTradingBot:
                     paused_strategies.add(name)
                     if self.stats['scans'] % 60 == 0:  # Log periodically
                         self.logger.warning(f"Strategy '{name}' paused: hit daily loss limit.")
+                    continue
+
+                # Check consecutive losses
+                if self._check_strategy_consecutive_losses(name):
+                    paused_strategies.add(name)
+                    if self.stats['scans'] % 60 == 0:
+                        msg = f"Strategy '{name}' paused: hit consecutive loss limit."
+                        self.logger.warning(msg)
+                        if self.notifier:
+                            self.notifier.send_message(f"⚠️ {msg}")
 
         for symbol, ticker in self.tickers.items():
             try:
@@ -487,6 +502,38 @@ class SwingTradingBot:
             
         today_pnl = self.db.get_today_realized_pnl(strategy=strategy_name)
         return today_pnl <= -limit
+
+    def _check_global_consecutive_losses(self) -> bool:
+        """Check if global consecutive loss limit has been reached."""
+        limit = self.config['safety'].get('max_consecutive_losses')
+        if limit is None or limit <= 0:
+            return False
+            
+        losses = self.db.get_consecutive_losses()
+        if losses >= limit:
+            if self.stats['scans'] % 60 == 0:
+                msg = f"Global consecutive loss limit reached ({losses} >= {limit}). Pausing new trades."
+                self.logger.warning(msg)
+                if self.notifier:
+                    self.notifier.send_message(f"🛑 {msg}")
+            return True
+        return False
+
+    def _check_strategy_consecutive_losses(self, strategy_name: str) -> bool:
+        """Check if strategy consecutive loss limit has been reached."""
+        if not self.strategy_manager:
+            return False
+            
+        strategy = self.strategy_manager.get_strategy(strategy_name)
+        if not strategy:
+            return False
+            
+        limit = strategy.get_config('max_consecutive_losses')
+        if limit is None or limit <= 0:
+            return False
+            
+        losses = self.db.get_consecutive_losses(strategy=strategy_name)
+        return losses >= limit
 
     def _handle_trade_signal(self, symbol: str, direction: TradeDirection,
                             signal, current_price: float):

@@ -165,8 +165,12 @@ class BaseStrategy(ABC):
         """
         pass
 
-    def get_config(self, key: str, default: Any = None) -> Any:
-        """Get a configuration parameter."""
+    def get_config(self, key: str, default: Any = None, symbol: Optional[str] = None) -> Any:
+        """Get a configuration parameter, optionally checking symbol-specific overrides."""
+        if symbol:
+            overrides = self._config.get('symbol_overrides', {}).get(symbol, {})
+            if key in overrides:
+                return overrides[key]
         return self._config.get(key, default)
 
     def set_config(self, key: str, value: Any):
@@ -226,7 +230,8 @@ class BaseStrategy(ABC):
     def is_price_near_level(self, price: float, level: float,
                             proximity_pct: Optional[float] = None,
                             atr: Optional[float] = None,
-                            atr_multiplier: float = 0.5) -> bool:
+                            atr_multiplier: float = 0.5,
+                            symbol: Optional[str] = None) -> bool:
         """
         Check if price is within proximity of a level using proportional scaling.
 
@@ -239,11 +244,12 @@ class BaseStrategy(ABC):
                           If None, uses config 'zone_proximity_pct'
             atr: Average True Range value (optional, for volatility-adjusted proximity)
             atr_multiplier: Multiplier for ATR-based proximity (default 0.5)
+            symbol: Optional symbol for config overrides
 
         Returns:
             True if price is within the proximity zone of the level
         """
-        pct = proximity_pct if proximity_pct is not None else self.get_config('zone_proximity_pct', 0.005)
+        pct = proximity_pct if proximity_pct is not None else self.get_config('zone_proximity_pct', 0.005, symbol=symbol)
 
         # Calculate proximity distance
         if atr is not None and atr > 0:
@@ -259,7 +265,8 @@ class BaseStrategy(ABC):
     def get_proximity_distance(self, price: float,
                                proximity_pct: Optional[float] = None,
                                atr: Optional[float] = None,
-                               atr_multiplier: float = 0.5) -> float:
+                               atr_multiplier: float = 0.5,
+                               symbol: Optional[str] = None) -> float:
         """
         Calculate the proximity distance for a given price.
 
@@ -268,11 +275,12 @@ class BaseStrategy(ABC):
             proximity_pct: Percentage proximity (e.g., 0.005 = 0.5%)
             atr: Average True Range value (optional)
             atr_multiplier: Multiplier for ATR-based proximity
+            symbol: Optional symbol for config overrides
 
         Returns:
             The proximity distance in dollars
         """
-        pct = proximity_pct if proximity_pct is not None else self.get_config('zone_proximity_pct', 0.005)
+        pct = proximity_pct if proximity_pct is not None else self.get_config('zone_proximity_pct', 0.005, symbol=symbol)
 
         if atr is not None and atr > 0:
             return atr * atr_multiplier
@@ -280,7 +288,8 @@ class BaseStrategy(ABC):
             return price * pct
 
     def is_in_exclusion_zone(self, price: float, level: float,
-                             exclusion_pct: Optional[float] = None) -> bool:
+                             exclusion_pct: Optional[float] = None,
+                             symbol: Optional[str] = None) -> bool:
         """
         Check if a level is within the exclusion zone around current price.
 
@@ -290,11 +299,12 @@ class BaseStrategy(ABC):
             price: Current price
             level: The price level to check
             exclusion_pct: Exclusion zone as percentage (default 0.5% = 0.005)
+            symbol: Optional symbol for config overrides
 
         Returns:
             True if level is within the exclusion zone (should be ignored)
         """
-        pct = exclusion_pct if exclusion_pct is not None else self.get_config('exclusion_zone_pct', 0.005)
+        pct = exclusion_pct if exclusion_pct is not None else self.get_config('exclusion_zone_pct', 0.005, symbol=symbol)
 
         exclusion_distance = price * pct
         distance = abs(price - level)
@@ -323,7 +333,8 @@ class BaseStrategy(ABC):
         return (value - mean) / stdev
 
     def is_significant_level(self, volume: int, nearby_volumes: List[int],
-                             zscore_threshold: Optional[float] = None) -> bool:
+                             zscore_threshold: Optional[float] = None,
+                             symbol: Optional[str] = None) -> bool:
         """
         Determine if a volume level is statistically significant.
 
@@ -334,11 +345,12 @@ class BaseStrategy(ABC):
             volume: Volume at the price level to check
             nearby_volumes: List of volumes at nearby price levels
             zscore_threshold: Minimum z-score to be significant (default 3.0)
+            symbol: Optional symbol for config overrides
 
         Returns:
             True if the volume is statistically significant
         """
-        threshold = zscore_threshold if zscore_threshold is not None else self.get_config('zscore_threshold', 3.0)
+        threshold = zscore_threshold if zscore_threshold is not None else self.get_config('zscore_threshold', 3.0, symbol=symbol)
 
         if len(nearby_volumes) < 2:
             return volume > 0
