@@ -792,8 +792,31 @@ class TradingEngine:
         if not self.positions:
             return
 
+        # CRITICAL: Only check for manual closes if we can confirm IB connection is active.
+        # If disconnected, get_portfolio() returns empty list, which would incorrectly
+        # mark all positions as manually closed.
+        if not self.ib.is_connected():
+            logger.debug("Skipping manual close check - IB not connected")
+            return
+
         # Build lookup of IB portfolio by conId
         ib_portfolio = self.ib.get_portfolio()
+
+        # Safety check: If portfolio is empty but we have tracked positions, be cautious.
+        # An empty portfolio could mean:
+        #   (a) All positions were truly closed manually
+        #   (b) Connection issue not caught by is_connected() (stale data, API lag)
+        #   (c) User logged out of TWS but socket still open briefly
+        #
+        # To avoid falsely marking positions as closed, we skip if portfolio is empty.
+        # The user can manually clear stale positions from the database if needed.
+        if not ib_portfolio and self.positions:
+            logger.warning(
+                f"Empty portfolio from IB but tracking {len(self.positions)} position(s) - "
+                "skipping manual close check (possible connection issue)"
+            )
+            return
+
         ib_by_conid: Dict[int, int] = {}
         for item in ib_portfolio:
             con_id = item.contract.conId

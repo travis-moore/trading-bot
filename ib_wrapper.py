@@ -60,6 +60,16 @@ class IBWrapper:
             self.ib.disconnect()
             self.connected = False
             logger.info("Disconnected from IB")
+
+    def is_connected(self) -> bool:
+        """
+        Check if actually connected to IB.
+
+        Uses ib_insync's isConnected() which checks the actual socket state,
+        not just our cached flag. This catches cases where TWS was closed
+        or the user logged out.
+        """
+        return self.ib.isConnected()
     
     def get_stock_price(self, symbol: str) -> Optional[float]:
         """
