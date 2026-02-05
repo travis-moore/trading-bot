@@ -21,6 +21,10 @@ class TradeDirection(Enum):
     LONG_CALL = "long_call"
     LONG_PUT = "long_put"
     NO_TRADE = "no_trade"
+    BULL_PUT_SPREAD = "bull_put_spread"
+    BEAR_PUT_SPREAD = "bear_put_spread"
+    LONG_PUT_STRAIGHT = "long_put_straight"
+    IRON_CONDOR = "iron_condor"
 
 
 @dataclass

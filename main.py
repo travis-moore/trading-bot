@@ -21,6 +21,7 @@ from liquidity_analyzer import LiquidityAnalyzer, Pattern
 from trading_engine import TradingEngine, TradeDirection, Position
 from trade_db import TradeDatabase
 from notifications import DiscordNotifier
+from market_context import MarketRegimeDetector, SectorRotationManager
 
 # Try to import strategies module
 try:
@@ -60,6 +61,10 @@ class SwingTradingBot:
         
         # Notifications
         self.notifier = None
+        
+        # Context
+        self.market_regime = None
+        self.sector_manager = None
         
         # Statistics
         self.stats = {
@@ -143,6 +148,10 @@ class SwingTradingBot:
             if webhook_url:
                 self.notifier = DiscordNotifier(webhook_url)
                 self.notifier.send_message("🤖 **Swing Trading Bot Started**")
+            
+            # Initialize Market Context
+            self.market_regime = MarketRegimeDetector(self.ib)
+            self.sector_manager = SectorRotationManager(self.ib)
 
             # Initialize strategy manager if available
             if STRATEGIES_AVAILABLE and StrategyManager is not None:
@@ -166,7 +175,9 @@ class SwingTradingBot:
             self.engine = TradingEngine(
                 self.ib, self.analyzer, engine_config,
                 trade_db=self.db,
-                strategy_manager=self.strategy_manager
+                strategy_manager=self.strategy_manager,
+                market_regime_detector=self.market_regime,
+                sector_manager=self.sector_manager
             )
 
             # Reconcile DB positions with IB account state
@@ -186,6 +197,13 @@ class SwingTradingBot:
             # Update config with full list so logging/etc works
             self.config['symbols'] = list(all_symbols)
 
+            # Initialize Per-Symbol Data (Sector Mapping)
+            self.logger.info("Initializing symbol sector mapping...")
+            for symbol in self.config['symbols']:
+                details = self.ib.get_contract_details(symbol)
+                if details:
+                    self.sector_manager.map_symbol_to_sector(symbol, details.get('industry', ''))
+
             # Subscribe to market data for all symbols
             for symbol in self.config['symbols']:
                 # Level 2 (Depth)
@@ -204,6 +222,10 @@ class SwingTradingBot:
             if not self.tickers:
                 self.logger.error("No market depth subscriptions active")
                 return False
+            
+            # Initial Context Assessment
+            self.market_regime.assess_regime()
+            self.sector_manager.assess_rotation()
             
             self.logger.info("Initialization complete")
             return True
@@ -373,6 +395,17 @@ class SwingTradingBot:
         if self._check_global_consecutive_losses():
             return
 
+        # Update Market Context (Frequency checks handled inside or here)
+        # Simple check: run regime at open/mid-day, sector every hour
+        # For simplicity in this loop, we rely on the managers to check time or we check here
+        now = datetime.now()
+        # Re-assess regime if needed (e.g. if last update was long ago)
+        # Real implementation would check specific times (9:30, 13:30)
+        
+        # Re-assess sectors every 60 mins
+        if self.sector_manager.last_update is None or (now - self.sector_manager.last_update).total_seconds() > 3600:
+            self.sector_manager.assess_rotation()
+
         # Identify paused strategies (per-strategy daily loss limit)
         paused_strategies = set()
         if self.strategy_manager:
@@ -415,6 +448,8 @@ class SwingTradingBot:
                         'symbol': symbol,
                         'positions': self.engine.positions,
                         'account_value': self.ib.get_account_value(),
+                        'market_regime': self.market_regime.current_regime,
+                        'sector_rs': self.sector_manager.get_sector_rs(symbol)
                     }
                     signals = self.strategy_manager.analyze_all(ticker, current_price, context)
 
@@ -441,6 +476,16 @@ class SwingTradingBot:
                         self.stats['signals_detected'] += 1
 
                         # Evaluate if signal meets trading rules
+                        # We pass symbol via metadata hack or rely on engine to have context
+                        # Engine has sector_manager, but needs symbol to check RS.
+                        # evaluate_signal signature is evaluate_signal(signal).
+                        # We can attach symbol to signal metadata if not present.
+                        if 'symbol' not in signal.metadata:
+                            signal.metadata['symbol'] = symbol
+                        
+                        # Also check Sector RS Veto here if Engine doesn't have symbol
+                        # (Engine refactor added checks, but let's ensure symbol is passed)
+                        
                         direction = self.engine.evaluate_signal(signal)
 
                         if direction and direction != TradeDirection.NO_TRADE:

@@ -280,6 +280,31 @@ class IBWrapper:
             logger.error(f"Error getting option chain for {symbol}: {e}")
             return None, []
     
+    def get_contract_details(self, symbol: str, sec_type: str = 'STK', exchange: str = 'SMART') -> Optional[Dict]:
+        """Get contract details including industry/sector."""
+        try:
+            contract = Contract()
+            contract.symbol = symbol
+            contract.secType = sec_type
+            contract.exchange = exchange
+            contract.currency = 'USD'
+            
+            details_list = self.ib.reqContractDetails(contract)
+            if not details_list:
+                return None
+            
+            # Return the first match
+            details = details_list[0]
+            return {
+                'industry': details.industry,
+                'category': details.category,
+                'subcategory': details.subcategory,
+                'longName': details.longName
+            }
+        except Exception as e:
+            logger.error(f"Error getting contract details for {symbol}: {e}")
+            return None
+
     def find_option_contract(self, symbol: str, strike: float, expiry: str,
                             right: str = 'C', check_prices: bool = True,
                             quiet: bool = False) -> Optional[Contract]:
