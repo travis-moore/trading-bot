@@ -143,6 +143,9 @@ class SwingTradingStrategy(BaseStrategy):
     def get_default_config(self) -> Dict[str, Any]:
         """Return default configuration for swing trading strategy."""
         return {
+            # Position limits (per strategy instance)
+            'max_positions': 2,                 # Max concurrent positions for this strategy
+
             # Liquidity analysis parameters
             'liquidity_threshold': 1000,        # Base min size for zone identification
             'num_levels': 10,                   # Depth levels to analyze for local stats
@@ -203,8 +206,9 @@ class SwingTradingStrategy(BaseStrategy):
 
         # Check for spoofing
         spoofed_levels = self._detect_spoofing(symbol, analysis, current_price)
+        instance_name = self.get_config('instance_name', self.name)
         for level_price in spoofed_levels:
-            logger.info(f"swing_trading ({symbol}): Spoofing detected at ${level_price:.2f}")
+            logger.info(f"{instance_name} ({symbol}): Spoofing detected at ${level_price:.2f}")
 
         # Get confirmed levels only
         confirmed_support = self._get_confirmed_levels(symbol, 'support')
@@ -228,8 +232,10 @@ class SwingTradingStrategy(BaseStrategy):
             pattern, confidence_val, price_level, imbalance, metadata = pattern_result
             pattern_name = pattern.value
 
+        # Use instance_name from config for logging (falls back to strategy type name)
+        instance_name = self.get_config('instance_name', self.name)
         logger.info(
-            f"swing_trading ({symbol}): price=${current_price:.2f}, "
+            f"{instance_name} ({symbol}): price=${current_price:.2f}, "
             f"support={support_str}, resistance={resistance_str}, "
             f"pattern={pattern_name}, confidence={confidence_val:.2f}"
         )

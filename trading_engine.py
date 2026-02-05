@@ -140,6 +140,46 @@ class TradingEngine:
         """Check if engine is using strategy manager."""
         return self.strategy_manager is not None and STRATEGIES_AVAILABLE
 
+    def _get_strategy_max_positions(self, strategy_name: str) -> int:
+        """
+        Get max_positions for a specific strategy instance.
+
+        Looks up the strategy's config for max_positions, falling back to
+        the global max_positions setting.
+
+        Args:
+            strategy_name: The strategy instance name
+
+        Returns:
+            Maximum number of positions allowed for this strategy
+        """
+        if self.strategy_manager is not None:
+            strategy = self.strategy_manager.get_strategy(strategy_name)
+            if strategy:
+                # Check strategy's own config for max_positions
+                max_pos = strategy.get_config('max_positions', None)
+                if max_pos is not None:
+                    return int(max_pos)
+
+        # Fall back to global max_positions
+        return self.max_positions
+
+    def _get_strategy_label(self, strategy_name: str) -> str:
+        """
+        Get a display label for a strategy instance (type:instance format).
+
+        Args:
+            strategy_name: The strategy instance name
+
+        Returns:
+            Label like "swing_trading:swing_aggressive" or just the name if type equals name
+        """
+        if self.strategy_manager is not None:
+            strategy_type = self.strategy_manager.get_strategy_type(strategy_name)
+            if strategy_type and strategy_type != strategy_name:
+                return f"{strategy_type}:{strategy_name}"
+        return strategy_name
+
     def get_signal(self, ticker, current_price: float, symbol: str):
         """
         Get trading signal using strategy manager or legacy analyzer.
@@ -361,38 +401,57 @@ class TradingEngine:
         Returns:
             True if order placed successfully (not necessarily filled)
         """
-        # Check if we can take more positions (include pending orders)
-        total_exposure = len(self.positions) + len(self.pending_orders)
-        if total_exposure >= self.max_positions:
-            logger.info("Maximum positions/orders reached, skipping trade")
+        # Get strategy info from signal metadata (if using strategy system)
+        signal_metadata = getattr(signal, 'metadata', {})
+        strategy_name = signal_metadata.get('strategy', 'swing_trading')  # Instance name
+        strategy_type = signal_metadata.get('strategy_type', strategy_name)  # Type (e.g., swing_trading)
+        strategy_label = f"{strategy_type}:{strategy_name}" if strategy_type != strategy_name else strategy_name
+
+        # Get per-strategy max_positions (fall back to global config)
+        strategy_max_positions = self._get_strategy_max_positions(strategy_name)
+
+        # Count positions for this specific strategy
+        strategy_positions = sum(
+            1 for p in self.positions if p.strategy_name == strategy_name
+        )
+        strategy_pending = sum(
+            1 for po in self.pending_orders if po.strategy_name == strategy_name
+        )
+        strategy_exposure = strategy_positions + strategy_pending
+
+        if strategy_exposure >= strategy_max_positions:
+            logger.info(
+                f"[{strategy_label}] Max positions reached ({strategy_exposure}/{strategy_max_positions}), "
+                f"skipping trade"
+            )
             return False
 
-        # Check if we already have a position or pending order in this symbol
+        # Check if we already have a position or pending order in this symbol for this strategy
         for p in self.positions:
-            if p.contract.symbol == symbol:
-                logger.info(f"Already holding a position in {symbol}, skipping")
+            if p.contract.symbol == symbol and p.strategy_name == strategy_name:
+                logger.info(f"[{strategy_label}] Already holding a position in {symbol}, skipping")
                 return False
         for po in self.pending_orders:
-            if po.contract.symbol == symbol:
-                logger.info(f"Already have pending order in {symbol}, skipping")
+            if po.contract.symbol == symbol and po.strategy_name == strategy_name:
+                logger.info(f"[{strategy_label}] Already have pending order in {symbol}, skipping")
                 return False
 
         # Get current price
         current_price = self.ib.get_stock_price(symbol)
         if current_price is None:
-            logger.error("Could not get current price")
+            logger.error(f"[{strategy_label}] Could not get current price for {symbol}")
             return False
 
         # Select option
         contract = self.select_option(symbol, direction, current_price)
         if contract is None:
-            logger.error("Could not select option contract")
+            logger.error(f"[{strategy_label}] Could not select option contract for {symbol}")
             return False
 
         # Get option price
         price_data = self.ib.get_option_price(contract)
         if price_data is None:
-            logger.error("Could not get option price")
+            logger.error(f"[{strategy_label}] Could not get option price for {contract.localSymbol}")
             return False
 
         bid, ask, last = price_data
@@ -401,7 +460,7 @@ class TradingEngine:
         entry_price = round(raw_price * 20) / 20
 
         if entry_price <= 0:
-            logger.error("Invalid option price")
+            logger.error(f"[{strategy_label}] Invalid option price for {contract.localSymbol}")
             return False
 
         # Calculate position size (scaled by signal confidence)
@@ -414,14 +473,6 @@ class TradingEngine:
         profit_target = round(raw_profit_target * 20) / 20
         stop_loss = round(raw_stop_loss * 20) / 20
 
-        logger.info(
-            f"Placing bracket order: {contract.localSymbol} x{quantity} "
-            f"@ ${entry_price:.2f} (SL: ${stop_loss:.2f}, TP: ${profit_target:.2f})"
-        )
-
-        # Get strategy name from signal metadata (if using strategy system)
-        strategy_name = getattr(signal, 'metadata', {}).get('strategy', 'swing_trading')
-
         # Check strategy budget if configured
         if self.db:
             available_budget = self.db.get_available_budget(strategy_name)
@@ -433,16 +484,21 @@ class TradingEngine:
                     max_affordable = int(available_budget / (entry_price * 100))
                     if max_affordable < 1:
                         logger.info(
-                            f"Strategy '{strategy_name}' has insufficient budget "
+                            f"[{strategy_label}] Insufficient budget for {symbol} "
                             f"(available: ${available_budget:.2f}, need: ${entry_price * 100:.2f} per contract)"
                         )
                         return False
                     old_qty = quantity
                     quantity = max_affordable
                     logger.info(
-                        f"Reducing quantity from {old_qty} to {quantity} to fit "
-                        f"'{strategy_name}' budget (${available_budget:.2f} available)"
+                        f"[{strategy_label}] Reducing quantity from {old_qty} to {quantity} "
+                        f"to fit budget (${available_budget:.2f} available)"
                     )
+
+        logger.info(
+            f"[{strategy_label}] Placing bracket order: {contract.localSymbol} x{quantity} "
+            f"@ ${entry_price:.2f} (SL: ${stop_loss:.2f}, TP: ${profit_target:.2f})"
+        )
 
         # Generate order tag and persist before placing order (crash safety)
         order_ref = None
@@ -463,7 +519,7 @@ class TradingEngine:
                 'direction': direction.value,
                 'stop_loss': stop_loss,
                 'profit_target': profit_target,
-                'pattern': signal.pattern.value if hasattr(signal.pattern, 'value') else str(signal.pattern),
+                'pattern': signal.pattern_name.value if hasattr(signal.pattern_name, 'value') else str(signal.pattern_name),
                 'strategy': strategy_name,
                 'entry_order_id': None,
                 'order_ref': order_ref,
@@ -483,7 +539,7 @@ class TradingEngine:
             )
 
             if trades is None:
-                logger.error("Failed to place bracket order")
+                logger.error(f"[{strategy_label}] Failed to place bracket order for {contract.localSymbol}")
                 if self.db and db_id:
                     self.db.close_position(db_id, 0, 'order_failed')
                 return False
@@ -495,7 +551,7 @@ class TradingEngine:
                 contract, quantity, limit_price=entry_price, order_ref=order_ref
             )
             if entry_trade is None:
-                logger.error("Failed to place order")
+                logger.error(f"[{strategy_label}] Failed to place order for {contract.localSymbol}")
                 if self.db and db_id:
                     self.db.close_position(db_id, 0, 'order_failed')
                 return False
@@ -515,7 +571,7 @@ class TradingEngine:
             direction=direction,
             stop_loss=stop_loss,
             profit_target=profit_target,
-            pattern=signal.pattern,
+            pattern=signal.pattern_name,
             entry_trade=entry_trade,
             stop_loss_trade=stop_loss_trade,
             take_profit_trade=take_profit_trade,
@@ -527,8 +583,8 @@ class TradingEngine:
         self.pending_orders.append(pending)
 
         logger.info(
-            f"Bracket order placed (pending fill). "
-            f"Entry: ${entry_price:.2f}, Stop: ${stop_loss:.2f}, Target: ${profit_target:.2f}"
+            f"[{strategy_label}] Order placed (pending fill): {contract.localSymbol} x{quantity} "
+            f"@ ${entry_price:.2f} (SL: ${stop_loss:.2f}, TP: ${profit_target:.2f})"
         )
         return True
     
@@ -636,18 +692,25 @@ class TradingEngine:
             self._remove_pending_order(pending, 'no_fills')
             return
 
+        strategy_name = pending.strategy_name or 'unknown'
+        strategy_label = self._get_strategy_label(strategy_name)
         is_partial = filled_qty < pending.quantity
         if is_partial:
             logger.info(
-                f"Partial fill: {pending.contract.localSymbol} "
+                f"[{strategy_label}] Partial fill: {pending.contract.localSymbol} "
                 f"{filled_qty}/{pending.quantity} contracts filled"
             )
         else:
-            logger.info(f"Order filled: {pending.contract.localSymbol} x{filled_qty}")
+            logger.info(f"[{strategy_label}] Order filled: {pending.contract.localSymbol} x{filled_qty}")
 
         # Get actual fill price
         status = self.ib.get_order_status(pending.entry_trade)
         fill_price = status['avg_fill_price'] if status['avg_fill_price'] > 0 else pending.entry_price
+
+        # Calculate trade cost and commit budget
+        trade_cost = fill_price * filled_qty * 100  # Options: price * contracts * 100
+        if self.db and pending.strategy_name:
+            self.db.commit_budget(pending.strategy_name, trade_cost)
 
         # Create position with actual filled quantity
         position = Position(
@@ -677,16 +740,18 @@ class TradingEngine:
                 self.db.update_position_quantity(pending.db_id, filled_qty)
             # Log if fill price differs from limit price
             if abs(fill_price - pending.entry_price) > 0.01:
-                logger.info(f"Fill price ${fill_price:.2f} differs from limit ${pending.entry_price:.2f}")
+                logger.info(f"[{strategy_label}] Fill price ${fill_price:.2f} differs from limit ${pending.entry_price:.2f}")
 
         logger.info(
-            f"Position opened: {pending.contract.localSymbol} x{filled_qty} "
+            f"[{strategy_label}] Position opened: {pending.contract.localSymbol} x{filled_qty} "
             f"@ ${fill_price:.2f} (SL: ${pending.stop_loss:.2f}, TP: ${pending.profit_target:.2f})"
         )
 
     def _cancel_pending_order(self, pending: PendingOrder, reason: str):
         """Cancel a pending order and clean up."""
-        logger.info(f"Cancelling order for {pending.contract.localSymbol}: {reason}")
+        strategy_name = pending.strategy_name or 'unknown'
+        strategy_label = self._get_strategy_label(strategy_name)
+        logger.info(f"[{strategy_label}] Cancelling order for {pending.contract.localSymbol}: {reason}")
 
         # Cancel entry order
         self.ib.cancel_order(pending.entry_trade)
@@ -701,13 +766,15 @@ class TradingEngine:
 
     def _remove_pending_order(self, pending: PendingOrder, reason: str):
         """Remove a pending order from tracking."""
+        strategy_name = pending.strategy_name or 'unknown'
+        strategy_label = self._get_strategy_label(strategy_name)
         self.pending_orders.remove(pending)
 
         # Update database
         if self.db and pending.db_id:
             self.db.close_position(pending.db_id, 0, f'order_{reason}')
 
-        logger.info(f"Removed pending order: {pending.contract.localSymbol} ({reason})")
+        logger.info(f"[{strategy_label}] Removed pending order: {pending.contract.localSymbol} ({reason})")
 
     def check_exits(self):
         """Check all positions for exit conditions"""
@@ -738,8 +805,10 @@ class TradingEngine:
 
             if ib_qty == 0:
                 # Position gone from IB entirely — closed manually
+                strategy_name = position.strategy_name or 'unknown'
+                strategy_label = self._get_strategy_label(strategy_name)
                 logger.info(
-                    f"Position {position.contract.localSymbol} no longer in IB portfolio "
+                    f"[{strategy_label}] Position {position.contract.localSymbol} no longer in IB portfolio "
                     f"-- assuming manual close"
                 )
                 if self.db and position.db_id:
@@ -786,7 +855,9 @@ class TradingEngine:
     
     def _exit_position(self, position: Position, reason: str):
         """Exit a position"""
-        logger.info(f"Exiting position: {position.contract.localSymbol}. Reason: {reason}")
+        strategy_name = position.strategy_name or 'unknown'
+        strategy_label = self._get_strategy_label(strategy_name)
+        logger.info(f"[{strategy_label}] Exiting position: {position.contract.localSymbol}. Reason: {reason}")
 
         # Place sell order
         trade = self.ib.sell_option(position.contract, position.quantity)
@@ -805,26 +876,45 @@ class TradingEngine:
                 )
             # Remove from in-memory positions
             self.positions.remove(position)
-            logger.info(f"Position exited successfully")
+            logger.info(f"[{strategy_label}] Position exited successfully: {position.contract.localSymbol}")
         else:
-            logger.error("Failed to exit position")
+            logger.error(f"[{strategy_label}] Failed to exit position: {position.contract.localSymbol}")
     
     def get_status(self) -> Dict:
         """Get current trading status"""
-        # Build pending order info with age
+        # Build pending order info with age and strategy (using type:instance format)
         pending_info = []
         for po in self.pending_orders:
             age_sec = (datetime.now() - po.order_time).total_seconds()
+            strat = po.strategy_name or 'unknown'
+            strat_label = self._get_strategy_label(strat)
             pending_info.append(
-                f"{po.contract.localSymbol} x{po.quantity} @ ${po.entry_price:.2f} ({age_sec:.0f}s)"
+                f"[{strat_label}] {po.contract.localSymbol} x{po.quantity} @ ${po.entry_price:.2f} ({age_sec:.0f}s)"
             )
+
+        # Build position info with strategy (using type:instance format)
+        position_info = []
+        for p in self.positions:
+            strat = p.strategy_name or 'unknown'
+            strat_label = self._get_strategy_label(strat)
+            position_info.append(f"[{strat_label}] {p.contract.localSymbol} x{p.quantity}")
+
+        # Count positions per strategy
+        positions_by_strategy: Dict[str, int] = {}
+        for p in self.positions:
+            strat = p.strategy_name or 'unknown'
+            positions_by_strategy[strat] = positions_by_strategy.get(strat, 0) + 1
+        for po in self.pending_orders:
+            strat = po.strategy_name or 'unknown'
+            positions_by_strategy[strat] = positions_by_strategy.get(strat, 0) + 1
 
         status = {
             'positions': len(self.positions),
             'pending_orders': len(self.pending_orders),
             'max_positions': self.max_positions,
-            'active_contracts': [f"{p.contract.localSymbol} x{p.quantity}" for p in self.positions],
+            'active_contracts': position_info,
             'pending_contracts': pending_info,
+            'positions_by_strategy': positions_by_strategy,
             'account_value': self.ib.get_account_value(),
             'pnl': None,
         }

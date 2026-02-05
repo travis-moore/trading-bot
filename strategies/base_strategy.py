@@ -178,19 +178,16 @@ class BaseStrategy(ABC):
         """
         Validate current configuration.
 
-        Override to add custom validation logic.
+        Missing keys are NOT errors - they use defaults from get_default_config().
+        Override to add custom validation logic for invalid values.
 
         Returns:
             List of validation error messages (empty if valid).
         """
-        errors = []
-        defaults = self.get_default_config()
-
-        for key in defaults:
-            if key not in self._config:
-                errors.append(f"Missing required config: {key}")
-
-        return errors
+        # By default, no validation errors.
+        # Subclasses can override to check for invalid values.
+        # Missing keys just use defaults, so they're not errors.
+        return []
 
     def on_position_opened(self, position: Any):
         """

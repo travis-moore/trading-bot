@@ -103,6 +103,9 @@ class StrategyManager:
             # Get strategy-specific config
             strategy_config = config or self._get_strategy_config(instance_name)
 
+            # Inject instance_name into config so strategies can use it for logging
+            strategy_config = {**strategy_config, 'instance_name': instance_name}
+
             # Determine strategy type: explicit param > config 'type' field > instance_name
             resolved_type: str = strategy_type or strategy_config.get('type', instance_name)
 

@@ -71,6 +71,9 @@ class ScalpingStrategy(BaseStrategy):
     def get_default_config(self) -> Dict[str, Any]:
         """Return default configuration for scalping strategy."""
         return {
+            # Position limits (per strategy instance)
+            'max_positions': 1,                    # Max concurrent positions for this strategy
+
             # Imbalance thresholds
             'imbalance_entry_threshold': 0.7,      # Strong imbalance to enter
             'imbalance_exit_threshold': 0.3,       # Weak imbalance to exit
@@ -130,8 +133,9 @@ class ScalpingStrategy(BaseStrategy):
                 self._start_tracking(symbol, TradeDirection.LONG_CALL,
                                      current_price, tick, imbalance)
 
+                instance_name = self.get_config('instance_name', self.name)
                 logger.info(
-                    f"scalping ({symbol}): LONG signal - "
+                    f"{instance_name} ({symbol}): LONG signal - "
                     f"imbalance: {imbalance:+.2f}, confidence: {confidence:.2f}"
                 )
 
@@ -154,8 +158,9 @@ class ScalpingStrategy(BaseStrategy):
                 self._start_tracking(symbol, TradeDirection.LONG_PUT,
                                      current_price, tick, imbalance)
 
+                instance_name = self.get_config('instance_name', self.name)
                 logger.info(
-                    f"scalping ({symbol}): SHORT signal - "
+                    f"{instance_name} ({symbol}): SHORT signal - "
                     f"imbalance: {imbalance:+.2f}, confidence: {confidence:.2f}"
                 )
 
@@ -247,8 +252,9 @@ class ScalpingStrategy(BaseStrategy):
             if symbol in self._entry_prices:
                 del self._entry_prices[symbol]
 
+            instance_name = self.get_config('instance_name', self.name)
             logger.info(
-                f"scalping ({symbol}): EXIT signal - "
+                f"{instance_name} ({symbol}): EXIT signal - "
                 f"reason: {exit_reason}, ticks: {ticks_elapsed}, progress: {progress:+.2%}"
             )
 
@@ -276,7 +282,8 @@ class ScalpingStrategy(BaseStrategy):
         """Track position when opened."""
         symbol = position.contract.symbol
         if symbol in self._positions:
-            logger.debug(f"Scalping: tracking position {symbol}")
+            instance_name = self.get_config('instance_name', self.name)
+            logger.debug(f"{instance_name}: tracking position {symbol}")
 
     def on_position_closed(self, position: Any, reason: str):
         """Clean up tracking when position closed."""
@@ -288,4 +295,5 @@ class ScalpingStrategy(BaseStrategy):
         if symbol in self._tick_counts:
             del self._tick_counts[symbol]
 
-        logger.debug(f"Scalping: position {symbol} closed - {reason}")
+        instance_name = self.get_config('instance_name', self.name)
+        logger.debug(f"{instance_name}: position {symbol} closed - {reason}")

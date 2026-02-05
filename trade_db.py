@@ -79,12 +79,14 @@ class TradeDatabase:
             );
 
             -- Strategy budget tracking
-            -- drawdown tracks how far below budget we are (0 = at full budget)
-            -- available = budget - drawdown
+            -- drawdown tracks cumulative losses (0 = no losses)
+            -- committed tracks capital locked in open positions
+            -- available = budget - drawdown - committed
             CREATE TABLE IF NOT EXISTS strategy_budgets (
                 strategy_name   TEXT PRIMARY KEY,
                 budget          REAL NOT NULL,
                 drawdown        REAL NOT NULL DEFAULT 0,
+                committed       REAL NOT NULL DEFAULT 0,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -109,6 +111,16 @@ class TradeDatabase:
             logger.info("Migrating: adding strategy column to trade_history table")
             self.conn.execute(
                 "ALTER TABLE trade_history ADD COLUMN strategy TEXT NOT NULL DEFAULT 'swing_trading'"
+            )
+            self.conn.commit()
+
+        # Add committed column to strategy_budgets if missing
+        cursor = self.conn.execute("PRAGMA table_info(strategy_budgets)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if 'committed' not in columns:
+            logger.info("Migrating: adding committed column to strategy_budgets table")
+            self.conn.execute(
+                "ALTER TABLE strategy_budgets ADD COLUMN committed REAL NOT NULL DEFAULT 0"
             )
             self.conn.commit()
 
@@ -190,6 +202,7 @@ class TradeDatabase:
                        exit_reason: str, exit_order_id: Optional[int] = None):
         """
         Atomically move an open position to trade_history and delete from positions.
+        Also releases committed budget and applies P&L to drawdown.
         """
         row = self.conn.execute(
             "SELECT * FROM positions WHERE id = ?", (position_id,)
@@ -199,11 +212,15 @@ class TradeDatabase:
             logger.warning(f"Position id={position_id} not found in DB")
             return
 
+        # Calculate entry cost and exit value (options = price * quantity * 100)
+        entry_cost = row['entry_price'] * row['quantity'] * 100
+        exit_value = exit_price * row['quantity'] * 100 if exit_price and exit_price > 0 else 0
+
         # Calculate P&L
         pnl = None
         pnl_pct = None
         if exit_price and exit_price > 0 and row['entry_price'] > 0:
-            pnl = (exit_price - row['entry_price']) * row['quantity'] * 100
+            pnl = exit_value - entry_cost
             pnl_pct = (exit_price - row['entry_price']) / row['entry_price'] * 100
 
         exit_time = datetime.now().isoformat()
@@ -233,13 +250,18 @@ class TradeDatabase:
             self.conn.execute("DELETE FROM positions WHERE id = ?", (position_id,))
             self.conn.commit()
             logger.info(
-                f"Closed position id={position_id}: {row['local_symbol']} "
-                f"reason={exit_reason} pnl={pnl}"
+                f"[{strategy}] Closed position: {row['local_symbol']} "
+                f"reason={exit_reason} pnl=${pnl:+.2f}" if pnl else
+                f"[{strategy}] Closed position: {row['local_symbol']} reason={exit_reason}"
             )
 
-            # Update strategy budget if P&L was calculated
-            if pnl is not None:
-                self.update_budget_after_trade(strategy, pnl)
+            # Release committed budget and apply P&L
+            if exit_value > 0:
+                self.release_budget(strategy, entry_cost, exit_value)
+            else:
+                # Position closed without exit price (manual close, expired, etc.)
+                # Release committed amount as total loss
+                self.release_budget(strategy, entry_cost, 0)
 
         except Exception as e:
             self.conn.rollback()
@@ -346,7 +368,7 @@ class TradeDatabase:
         Get current budget state for a strategy.
 
         Returns:
-            Dict with 'budget', 'drawdown', 'available' or None if not found
+            Dict with 'budget', 'drawdown', 'committed', 'available' or None if not found
         """
         cursor = self.conn.execute(
             "SELECT * FROM strategy_budgets WHERE strategy_name = ?",
@@ -358,11 +380,13 @@ class TradeDatabase:
 
         budget = row['budget']
         drawdown = row['drawdown']
+        committed = row['committed'] if 'committed' in row.keys() else 0
         return {
             'strategy_name': strategy_name,
             'budget': budget,
             'drawdown': drawdown,
-            'available': budget - drawdown,
+            'committed': committed,
+            'available': budget - drawdown - committed,
             'updated_at': row['updated_at'],
         }
 
@@ -385,7 +409,7 @@ class TradeDatabase:
             if reset_drawdown:
                 self.conn.execute("""
                     UPDATE strategy_budgets
-                    SET budget = ?, drawdown = 0, updated_at = datetime('now')
+                    SET budget = ?, drawdown = 0, committed = 0, updated_at = datetime('now')
                     WHERE strategy_name = ?
                 """, (budget, strategy_name))
             else:
@@ -398,8 +422,8 @@ class TradeDatabase:
                 """, (budget, new_drawdown, strategy_name))
         else:
             self.conn.execute("""
-                INSERT INTO strategy_budgets (strategy_name, budget, drawdown)
-                VALUES (?, ?, 0)
+                INSERT INTO strategy_budgets (strategy_name, budget, drawdown, committed)
+                VALUES (?, ?, 0, 0)
             """, (strategy_name, budget))
 
         self.conn.commit()
@@ -409,6 +433,95 @@ class TradeDatabase:
         result = self.get_strategy_budget(strategy_name)
         assert result is not None
         return result
+
+    def commit_budget(self, strategy_name: str, amount: float) -> Optional[Dict[str, Any]]:
+        """
+        Commit (reserve) budget when a position is opened.
+
+        This reduces available budget immediately when a trade fills,
+        preventing the strategy from over-allocating.
+
+        Args:
+            strategy_name: The strategy instance name
+            amount: Dollar amount to commit (trade cost)
+
+        Returns:
+            Updated budget state, or None if strategy has no budget configured
+        """
+        existing = self.get_strategy_budget(strategy_name)
+        if not existing:
+            logger.debug(f"No budget configured for strategy '{strategy_name}'")
+            return None
+
+        old_committed = existing['committed']
+        new_committed = old_committed + amount
+
+        self.conn.execute("""
+            UPDATE strategy_budgets
+            SET committed = ?, updated_at = datetime('now')
+            WHERE strategy_name = ?
+        """, (new_committed, strategy_name))
+        self.conn.commit()
+
+        new_state = self.get_strategy_budget(strategy_name)
+        if new_state:
+            logger.info(
+                f"[{strategy_name}] Budget committed: +${amount:.2f}, "
+                f"committed ${old_committed:.2f}->${new_committed:.2f}, "
+                f"available ${new_state['available']:.2f}"
+            )
+        return new_state
+
+    def release_budget(self, strategy_name: str, committed_amount: float,
+                       exit_value: float) -> Optional[Dict[str, Any]]:
+        """
+        Release committed budget when a position is closed.
+
+        This removes the committed amount and applies P&L to drawdown.
+        - If exit_value > committed_amount: profit reduces drawdown
+        - If exit_value < committed_amount: loss increases drawdown
+
+        Args:
+            strategy_name: The strategy instance name
+            committed_amount: Original amount committed (entry cost)
+            exit_value: Value received on exit
+
+        Returns:
+            Updated budget state, or None if strategy has no budget configured
+        """
+        existing = self.get_strategy_budget(strategy_name)
+        if not existing:
+            logger.debug(f"No budget configured for strategy '{strategy_name}'")
+            return None
+
+        pnl = exit_value - committed_amount
+        old_committed = existing['committed']
+        old_drawdown = existing['drawdown']
+
+        # Release the committed amount
+        new_committed = max(0, old_committed - committed_amount)
+
+        # Apply P&L to drawdown
+        # Loss (negative pnl) increases drawdown
+        # Win (positive pnl) decreases drawdown (but not below 0)
+        new_drawdown = max(0, old_drawdown - pnl)
+
+        self.conn.execute("""
+            UPDATE strategy_budgets
+            SET committed = ?, drawdown = ?, updated_at = datetime('now')
+            WHERE strategy_name = ?
+        """, (new_committed, new_drawdown, strategy_name))
+        self.conn.commit()
+
+        new_state = self.get_strategy_budget(strategy_name)
+        if new_state:
+            logger.info(
+                f"[{strategy_name}] Budget released: pnl=${pnl:+.2f}, "
+                f"committed ${old_committed:.2f}->${new_committed:.2f}, "
+                f"drawdown ${old_drawdown:.2f}->${new_drawdown:.2f}, "
+                f"available ${new_state['available']:.2f}"
+            )
+        return new_state
 
     def update_budget_after_trade(self, strategy_name: str, pnl: float) -> Optional[Dict[str, Any]]:
         """
@@ -455,6 +568,8 @@ class TradeDatabase:
         """
         Get the current available budget for a strategy.
 
+        Available = budget - drawdown - committed
+
         Returns:
             Available budget amount, or 0 if strategy has no budget configured
         """
@@ -475,17 +590,19 @@ class TradeDatabase:
         for row in cursor.fetchall():
             budget = row['budget']
             drawdown = row['drawdown']
+            committed = row['committed'] if 'committed' in row.keys() else 0
             result[row['strategy_name']] = {
                 'budget': budget,
                 'drawdown': drawdown,
-                'available': budget - drawdown,
+                'committed': committed,
+                'available': budget - drawdown - committed,
                 'updated_at': row['updated_at'],
             }
         return result
 
     def recalculate_budget_from_history(self, strategy_name: str, initial_budget: float) -> Dict[str, Any]:
         """
-        Recalculate a strategy's budget state from trade history.
+        Recalculate a strategy's budget state from trade history and open positions.
 
         This is useful for:
         - Recovering from corrupted budget data
@@ -510,19 +627,32 @@ class TradeDatabase:
             pnl = row['pnl']
             drawdown = max(0, drawdown - pnl)
 
+        # Calculate committed from open positions
+        cursor = self.conn.execute("""
+            SELECT entry_price, quantity FROM positions
+            WHERE strategy = ? AND status IN ('open', 'pending_fill')
+        """, (strategy_name,))
+
+        committed = 0.0
+        for row in cursor.fetchall():
+            committed += row['entry_price'] * row['quantity'] * 100
+
         # Update or insert the budget record
         self.conn.execute("""
-            INSERT INTO strategy_budgets (strategy_name, budget, drawdown)
-            VALUES (?, ?, ?)
+            INSERT INTO strategy_budgets (strategy_name, budget, drawdown, committed)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(strategy_name) DO UPDATE SET
                 budget = excluded.budget,
                 drawdown = excluded.drawdown,
+                committed = excluded.committed,
                 updated_at = datetime('now')
-        """, (strategy_name, initial_budget, drawdown))
+        """, (strategy_name, initial_budget, drawdown, committed))
         self.conn.commit()
 
+        available = initial_budget - drawdown - committed
         logger.info(f"Recalculated budget for '{strategy_name}' from history: "
-                    f"drawdown=${drawdown:.2f}, available=${initial_budget - drawdown:.2f}")
+                    f"drawdown=${drawdown:.2f}, committed=${committed:.2f}, "
+                    f"available=${available:.2f}")
         # This should never be None since we just inserted/updated
         result = self.get_strategy_budget(strategy_name)
         assert result is not None

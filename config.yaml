@@ -65,12 +65,15 @@ safety:
 
 strategies:
   # Multiple swing trading instances with different parameters
-  # Each strategy has its own budget - losses reduce available budget,
-  # wins recover it up to the cap, profits beyond cap don't increase it
+  # Each strategy instance has its own:
+  #   - budget: Max capital for this strategy (committed on entry, released on exit)
+  #   - max_positions: Max concurrent positions for this strategy instance
+  # Losses increase drawdown, wins recover it up to budget cap
   swing_conservative:
     type: swing_trading
     enabled: true
     budget: 2000                    # Max budget for this strategy ($)
+    max_positions: 2                # Max concurrent positions
     zone_proximity_pct: 0.005       # 0.5% proximity (wider)
     min_confidence: 0.75            # Higher confidence required
     zscore_threshold: 3.5           # Stricter level filtering
@@ -79,6 +82,7 @@ strategies:
     type: swing_trading
     enabled: true
     budget: 1500                    # Smaller budget for aggressive strategy
+    max_positions: 2                # Max concurrent positions
     zone_proximity_pct: 0.003       # 0.3% proximity (tighter)
     min_confidence: 0.65            # Lower confidence threshold
     zscore_threshold: 2.5           # More levels considered
@@ -88,6 +92,7 @@ strategies:
     type: scalping
     enabled: true
     budget: 1000                    # Tighter budget for quick scalps
+    max_positions: 1                # Scalping = one position at a time
     imbalance_entry_threshold: 0.7
     max_ticks_without_progress: 3   # Quick exit
 
@@ -95,5 +100,6 @@ strategies:
     type: scalping
     enabled: true
     budget: 1500
+    max_positions: 1                # Scalping = one position at a time
     imbalance_entry_threshold: 0.8  # Higher threshold
     max_ticks_without_progress: 7   # More patience

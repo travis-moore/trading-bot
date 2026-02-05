@@ -313,7 +313,7 @@ class SwingTradingBot:
                 if current_price is None:
                     continue
 
-                # Analyze order book for support/resistance
+                # Analyze order book for support/resistance (for logging)
                 analysis = self.analyzer.analyze_book(ticker)
                 nearest = self.analyzer.get_nearest_zones(current_price, analysis)
 
@@ -321,29 +321,62 @@ class SwingTradingBot:
                 support_str = f"${nearest['support'].price:.2f}" if nearest['support'] else "none"
                 resistance_str = f"${nearest['resistance'].price:.2f}" if nearest['resistance'] else "none"
 
-                # Detect pattern
-                signal = self.analyzer.detect_pattern(ticker, current_price)
+                # Use strategy manager if available, otherwise fall back to legacy analyzer
+                if self.strategy_manager:
+                    # Get signals from all enabled strategy instances
+                    context = {
+                        'symbol': symbol,
+                        'positions': self.engine.positions,
+                        'account_value': self.ib.get_account_value(),
+                    }
+                    signals = self.strategy_manager.analyze_all(ticker, current_price, context)
 
-                if signal is None:
-                    continue
+                    for signal in signals:
+                        # Get strategy instance info from signal metadata
+                        strategy_name = signal.metadata.get('strategy', 'unknown')
+                        strategy_type = signal.metadata.get('strategy_type', strategy_name)
+                        strategy_label = f"{strategy_type}:{strategy_name}" if strategy_type != strategy_name else strategy_name
 
-                # Log non-consolidation patterns with support/resistance info
-                if signal.pattern != Pattern.CONSOLIDATION:
-                    imbalance = signal.imbalance if signal.imbalance is not None else 0
-                    imbalance_dir = "^" if imbalance > 0 else "v" if imbalance < 0 else "-"
-                    self.logger.info(
-                        f"{symbol}: ${current_price:.2f} - {signal.pattern.value} "
-                        f"(confidence: {signal.confidence:.2f}) | "
-                        f"support: {support_str}, resistance: {resistance_str}, "
-                        f"imbalance: {imbalance:+.2f} {imbalance_dir}"
-                    )
-                    self.stats['signals_detected'] += 1
+                        # Log the signal with strategy instance info
+                        imbalance = signal.metadata.get('imbalance', 0)
+                        imbalance_dir = "^" if imbalance > 0 else "v" if imbalance < 0 else "-"
+                        self.logger.info(
+                            f"[{strategy_label}] {symbol}: ${current_price:.2f} - {signal.pattern_name} "
+                            f"(confidence: {signal.confidence:.2f}) | "
+                            f"support: {support_str}, resistance: {resistance_str}, "
+                            f"imbalance: {imbalance:+.2f} {imbalance_dir}"
+                        )
+                        self.stats['signals_detected'] += 1
 
-                    # Evaluate if signal meets trading rules
-                    direction = self.engine.evaluate_signal(signal)
+                        # Evaluate if signal meets trading rules
+                        direction = self.engine.evaluate_signal(signal)
 
-                    if direction and direction != TradeDirection.NO_TRADE:
-                        self._handle_trade_signal(symbol, direction, signal, current_price)
+                        if direction and direction != TradeDirection.NO_TRADE:
+                            self._handle_trade_signal(symbol, direction, signal, current_price)
+                else:
+                    # Legacy path: use analyzer directly
+                    signal = self.analyzer.detect_pattern(ticker, current_price)
+
+                    if signal is None:
+                        continue
+
+                    # Log non-consolidation patterns with support/resistance info
+                    if signal.pattern != Pattern.CONSOLIDATION:
+                        imbalance = signal.imbalance if signal.imbalance is not None else 0
+                        imbalance_dir = "^" if imbalance > 0 else "v" if imbalance < 0 else "-"
+                        self.logger.info(
+                            f"{symbol}: ${current_price:.2f} - {signal.pattern.value} "
+                            f"(confidence: {signal.confidence:.2f}) | "
+                            f"support: {support_str}, resistance: {resistance_str}, "
+                            f"imbalance: {imbalance:+.2f} {imbalance_dir}"
+                        )
+                        self.stats['signals_detected'] += 1
+
+                        # Evaluate if signal meets trading rules
+                        direction = self.engine.evaluate_signal(signal)
+
+                        if direction and direction != TradeDirection.NO_TRADE:
+                            self._handle_trade_signal(symbol, direction, signal, current_price)
 
             except Exception as e:
                 self.logger.error(f"Error scanning {symbol}: {e}", exc_info=True)
@@ -410,14 +443,20 @@ class SwingTradingBot:
         self.logger.info(f"Trades exited: {self.stats['trades_exited']}")
         self.logger.info(
             f"Positions: {status['positions']} open, "
-            f"{status['pending_orders']} pending / {status['max_positions']} max"
+            f"{status['pending_orders']} pending"
         )
 
+        # Show positions by strategy
+        positions_by_strat = status.get('positions_by_strategy', {})
+        if positions_by_strat:
+            strat_summary = ", ".join(f"{k}: {v}" for k, v in positions_by_strat.items())
+            self.logger.info(f"By strategy: {strat_summary}")
+
         if status['pending_contracts']:
-            self.logger.info(f"Pending orders: {', '.join(status['pending_contracts'])}")
+            self.logger.info(f"Pending: {', '.join(status['pending_contracts'])}")
 
         if status['active_contracts']:
-            self.logger.info(f"Active contracts: {', '.join(status['active_contracts'])}")
+            self.logger.info(f"Open: {', '.join(status['active_contracts'])}")
 
         if status['account_value']:
             self.logger.info(f"Account value: ${status['account_value']:,.2f}")
@@ -680,27 +719,28 @@ Available commands:
 
         budgets = self.db.get_all_budgets()
 
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 85)
         print("STRATEGY BUDGETS")
-        print("=" * 70)
+        print("=" * 85)
 
         if not budgets:
             print("  No strategy budgets configured")
             print("  Add 'budget: <amount>' to strategy config in config.yaml")
         else:
-            print(f"  {'Strategy':<25} {'Budget':>10} {'Available':>12} {'Drawdown':>10} {'%Used':>8}")
-            print("-" * 70)
+            print(f"  {'Strategy':<22} {'Budget':>10} {'Committed':>11} {'Drawdown':>10} {'Available':>11} {'%Avail':>8}")
+            print("-" * 85)
             for strategy_name, state in budgets.items():
                 budget = state['budget']
                 available = state['available']
                 drawdown = state['drawdown']
-                pct_used = (drawdown / budget * 100) if budget > 0 else 0
+                committed = state.get('committed', 0)
+                pct_avail = (available / budget * 100) if budget > 0 else 0
                 print(
-                    f"  {strategy_name:<25} ${budget:>8,.0f} ${available:>10,.2f} "
-                    f"${drawdown:>8,.2f} {pct_used:>6.1f}%"
+                    f"  {strategy_name:<22} ${budget:>8,.0f} ${committed:>9,.2f} "
+                    f"${drawdown:>8,.2f} ${available:>9,.2f} {pct_avail:>6.1f}%"
                 )
 
-        print("=" * 70 + "\n")
+        print("=" * 85 + "\n")
 
     def _cmd_metrics(self, args: str = ''):
         """Show detailed performance metrics."""
