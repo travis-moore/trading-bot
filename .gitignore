@@ -26,3 +26,5 @@ Thumbs.db
 # Runtime files
 trading_bot.db
 trading_bot.log
+config_bk_2026-02-04.yaml
+.claude/settings.local.json
