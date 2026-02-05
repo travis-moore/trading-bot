@@ -7,11 +7,11 @@ ib_connection:
   client_id: 1
 
 # Trading symbols to monitor
-symbols:
-  - "NVDA"
-  - "AAPL"
-  - "TSLA"
-  # Add more symbols as needed
+# symbols:
+#   - "NVDA"
+#   - "AAPL"
+#   - "TSLA"
+#   # Add more symbols as needed
 
 # Liquidity Analyzer Settings
 liquidity_analysis:
@@ -73,6 +73,7 @@ strategies:
     type: swing_trading
     enabled: true
     budget: 2000                    # Max budget for this strategy ($)
+    symbols: ["NVDA", "AAPL", "TSLA"] # Monitor these symbols
     max_positions: 2                # Max concurrent positions
     zone_proximity_pct: 0.005       # 0.5% proximity (wider)
     min_confidence: 0.75            # Higher confidence required
@@ -98,6 +99,7 @@ strategies:
     type: swing_trading
     enabled: true
     budget: 1500                    # Smaller budget for aggressive strategy
+    symbols: ["NVDA", "TSLA"]       # Only trade these volatile stocks
     daily_loss_limit: 200.0         # Stop this strategy if it loses $200 today
     max_positions: 2                # Max concurrent positions
     zone_proximity_pct: 0.003       # 0.3% proximity (tighter)

@@ -263,9 +263,15 @@ class StrategyManager:
         """
         signals = []
         context = context or {}
+        symbol = context.get('symbol')
 
         for instance_name, strategy in self._strategies.items():
             if not self._enabled.get(instance_name, False):
+                continue
+
+            # Check if strategy is restricted to specific symbols
+            allowed_symbols = strategy.get_config('symbols')
+            if allowed_symbols and symbol and symbol not in allowed_symbols:
                 continue
 
             try:

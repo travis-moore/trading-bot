@@ -172,6 +172,20 @@ class SwingTradingBot:
             # Reconcile DB positions with IB account state
             self._reconcile_positions()
             
+            # Collect all symbols to monitor (global + per-strategy)
+            all_symbols = set(self.config.get('symbols', []) or [])
+            
+            # Add symbols from configured strategies
+            if 'strategies' in self.config:
+                for strat_config in self.config['strategies'].values():
+                    if strat_config.get('enabled', True):
+                        strat_symbols = strat_config.get('symbols', [])
+                        if strat_symbols:
+                            all_symbols.update(strat_symbols)
+            
+            # Update config with full list so logging/etc works
+            self.config['symbols'] = list(all_symbols)
+
             # Subscribe to market data for all symbols
             for symbol in self.config['symbols']:
                 # Level 2 (Depth)
