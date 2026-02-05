@@ -133,11 +133,64 @@ class IBWrapper:
             self.ib.cancelMktData(contract)
             logger.error(f"Could not get price for {symbol} - no market data received")
             return None
-            
+
         except Exception as e:
             logger.error(f"Error getting stock price for {symbol}: {e}")
             return None
-    
+
+    def get_historical_bars(
+        self,
+        symbol: str,
+        bar_size: str = '15 mins',
+        duration: str = '30 D',
+        what_to_show: str = 'TRADES',
+        use_rth: bool = True,
+        exchange: str = 'SMART'
+    ) -> Optional[List]:
+        """
+        Fetch historical OHLCV bars for a symbol.
+
+        Args:
+            symbol: Stock ticker symbol
+            bar_size: Bar timeframe. Valid values:
+                      '1 secs', '5 secs', '10 secs', '15 secs', '30 secs',
+                      '1 min', '2 mins', '3 mins', '5 mins', '10 mins', '15 mins',
+                      '20 mins', '30 mins', '1 hour', '2 hours', '3 hours',
+                      '4 hours', '8 hours', '1 day', '1 week', '1 month'
+            duration: How far back to fetch ('30 D', '60 D', '1 Y', etc.)
+            what_to_show: Data type ('TRADES', 'MIDPOINT', 'BID', 'ASK')
+            use_rth: Use regular trading hours only (True) or include extended hours (False)
+            exchange: Exchange for historical data ('SMART', 'ISLAND', etc.)
+
+        Returns:
+            List of BarData objects with attributes: date, open, high, low, close, volume
+            Returns None if error occurs
+        """
+        try:
+            contract = Stock(symbol, exchange, 'USD')
+            self.ib.qualifyContracts(contract)
+
+            bars = self.ib.reqHistoricalData(
+                contract,
+                endDateTime='',  # Empty string means current time
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow=what_to_show,
+                useRTH=use_rth,
+                formatDate=1,  # Return as datetime objects
+            )
+
+            if bars:
+                logger.info(f"Fetched {len(bars)} historical bars for {symbol} ({bar_size}, {duration})")
+                return bars
+
+            logger.warning(f"No historical bars returned for {symbol}")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error fetching historical bars for {symbol}: {e}")
+            return None
+
     def get_option_chain(self, symbol: str, expiry_days_min: int = 7, 
                          expiry_days_max: int = 60) -> List[Contract]:
         """

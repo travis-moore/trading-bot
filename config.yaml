@@ -77,6 +77,18 @@ strategies:
     zone_proximity_pct: 0.005       # 0.5% proximity (wider)
     min_confidence: 0.75            # Higher confidence required
     zscore_threshold: 3.5           # Stricter level filtering
+    # Historical Bounce Detection
+    historical_bounce_enabled: true
+    historical_lookback_days: 30    # Days of historical data
+    # Bar sizes: '1 min', '5 mins', '15 mins', '30 mins', '1 hour', '1 day'
+    historical_bar_size: '15 mins'
+    swing_window: 5                 # Bars on each side for swing detection
+    bounce_proximity_pct: 0.001     # 0.1% tolerance for clustering
+    min_bounces: 2                  # Min tests to form a level
+    decay_type: 'linear'            # 'linear' or 'exponential'
+    linear_decay_days: 30           # Days to full decay
+    power_level_proximity_pct: 0.005  # 0.5% - historical + depth alignment
+    power_level_confidence_boost: 0.15
 
   swing_aggressive:
     type: swing_trading
@@ -86,6 +98,17 @@ strategies:
     zone_proximity_pct: 0.003       # 0.3% proximity (tighter)
     min_confidence: 0.65            # Lower confidence threshold
     zscore_threshold: 2.5           # More levels considered
+    # Historical Bounce Detection - more aggressive settings
+    historical_bounce_enabled: true
+    historical_lookback_days: 20    # Shorter lookback (more recent data)
+    historical_bar_size: '15 mins'
+    swing_window: 3                 # Tighter swing detection
+    bounce_proximity_pct: 0.0015    # Wider clustering
+    min_bounces: 2
+    decay_type: 'exponential'       # Faster decay
+    exponential_half_life_days: 10
+    power_level_proximity_pct: 0.007  # Wider alignment
+    power_level_confidence_boost: 0.20  # Bigger boost
 
   # Multiple scalping instances
   scalp_quick:

@@ -142,6 +142,9 @@ class SwingTradingBot:
                 # Initialize budgets for strategies that have them configured
                 self._initialize_strategy_budgets()
 
+                # Wire up IB wrapper and database to strategies for historical data
+                self._wire_strategy_dependencies()
+
             # Initialize trading engine
             engine_config = {
                 **self.config['risk_management'],
@@ -218,6 +221,23 @@ class SwingTradingBot:
 
         if initialized > 0:
             self.logger.info(f"Initialized budgets for {initialized} strategies")
+
+    def _wire_strategy_dependencies(self):
+        """Wire up IB wrapper and trade database to strategies for historical data."""
+        if not self.strategy_manager:
+            return
+
+        wired = 0
+        for strategy in self.strategy_manager.get_all_strategies().values():
+            # Check if strategy has the setter methods (e.g., SwingTradingStrategy)
+            if hasattr(strategy, 'set_ib_wrapper') and self.ib:
+                strategy.set_ib_wrapper(self.ib)
+                wired += 1
+            if hasattr(strategy, 'set_trade_db') and self.db:
+                strategy.set_trade_db(self.db)
+
+        if wired > 0:
+            self.logger.info(f"Wired IB/DB dependencies to {wired} strategies for historical data")
 
     def _reconcile_positions(self):
         """Reconcile DB positions with IB account state on startup."""

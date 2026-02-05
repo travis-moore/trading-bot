@@ -74,6 +74,56 @@ class TrackedLevel:
     refresh_count: int = 0  # Times volume refreshed (iceberg behavior)
 
 
+# ============================================================================
+# Historical Bounce Detection Data Structures
+# ============================================================================
+
+@dataclass
+class SwingPoint:
+    """A local extremum (swing high or low) identified in historical price data."""
+    price: float
+    timestamp: datetime
+    swing_type: str  # 'high' or 'low'
+    bar_index: int = 0  # Index in the bar array for reference
+
+
+@dataclass
+class HistoricalBounceLevel:
+    """
+    A price level that has been tested multiple times historically.
+
+    These levels are identified from swing highs/lows that cluster within
+    a small percentage range, indicating areas where price has repeatedly
+    reversed (bounced).
+    """
+    price: float                      # Average price of the clustered swing points
+    level_type: str                   # 'support' or 'resistance'
+    bounce_count: int                 # Number of times tested (minimum 2)
+    first_test: datetime              # When first tested
+    last_test: datetime               # Most recent test
+    bounce_timestamps: List[datetime] # All bounce timestamps for decay calculation
+    strength: float                   # 0.0 to 1.0 based on bounce count (raw)
+    decayed_strength: float = 0.0     # Strength after applying time decay
+
+
+@dataclass
+class PowerLevel:
+    """
+    A 'Power Level' where historical bounce and real-time depth converge.
+
+    Power Levels are high-confidence trading zones where:
+    1. Historical price data shows repeated bounces
+    2. Current order book depth confirms significant liquidity
+    """
+    price: float                      # Averaged price of historical + depth
+    level_type: str                   # 'support' or 'resistance'
+    historical_level: HistoricalBounceLevel
+    depth_level: TrackedLevel         # The real-time depth level
+    combined_confidence: float        # Enhanced confidence score
+    depth_strength: str               # 'strong', 'average', or 'weak'
+    is_valid: bool                    # False if depth is weakened (skip trade)
+
+
 class SwingTradingStrategy(BaseStrategy):
     """
     Swing trading strategy based on order book liquidity analysis.
@@ -103,6 +153,15 @@ class SwingTradingStrategy(BaseStrategy):
 
         # Volume history for absorption detection
         self._volume_history: Dict[str, Dict[float, List[int]]] = {}  # symbol -> {price: [volumes]}
+
+        # Historical bounce detection
+        self._historical_levels: Dict[str, List[HistoricalBounceLevel]] = {}  # symbol -> bounce levels
+        self._power_levels: Dict[str, List[PowerLevel]] = {}  # symbol -> power levels
+        self._historical_last_update: Dict[str, datetime] = {}  # symbol -> last fetch time
+
+        # External dependencies (set via setter methods)
+        self._ib_wrapper: Optional[Any] = None  # IBWrapper for historical data
+        self._trade_db: Optional[Any] = None    # TradeDatabase for caching
 
         # Trading rules: pattern -> (direction, min_confidence)
         self._rules = {
@@ -173,6 +232,37 @@ class SwingTradingStrategy(BaseStrategy):
 
             # Imbalance weighting (not entry trigger, just confidence modifier)
             'imbalance_weight': 0.3,            # How much imbalance affects confidence
+
+            # === Historical Bounce Detection ===
+            'historical_bounce_enabled': True,  # Enable/disable historical analysis
+            'historical_lookback_days': 30,     # Days of historical data to fetch
+            # Bar sizes: '1 secs', '5 secs', '10 secs', '15 secs', '30 secs',
+            #            '1 min', '2 mins', '3 mins', '5 mins', '10 mins', '15 mins',
+            #            '20 mins', '30 mins', '1 hour', '2 hours', '3 hours',
+            #            '4 hours', '8 hours', '1 day', '1 week', '1 month'
+            'historical_bar_size': '15 mins',   # Candlestick timeframe
+            'swing_window': 5,                  # Bars on each side for swing detection
+
+            # Bounce Level Detection
+            'bounce_proximity_pct': 0.001,      # 0.1% tolerance for clustering swings
+            'min_bounces': 2,                   # Minimum tests to form a level
+            'max_historical_levels': 10,        # Max bounce levels to track per symbol
+
+            # Decay Settings
+            'decay_type': 'linear',             # 'linear' or 'exponential'
+            'linear_decay_days': 30,            # For linear: days to full decay
+            'exponential_half_life_days': 15.0, # For exponential: half-life in days
+
+            # Power Level Settings
+            'power_level_proximity_pct': 0.005, # 0.5% - historical + depth alignment
+            'power_level_confidence_boost': 0.15, # Confidence boost for power levels
+
+            # Depth Validation at Power Levels
+            'weak_depth_threshold': 0.5,        # Below this ratio = weak (skip trade)
+            'strong_depth_threshold': 1.5,      # Above this ratio = strong (extra conf)
+
+            # Cache Settings
+            'historical_cache_ttl_hours': 24,   # Refresh cache after N hours
         }
 
     def analyze(self, ticker: Any, current_price: float,
@@ -214,15 +304,30 @@ class SwingTradingStrategy(BaseStrategy):
         confirmed_support = self._get_confirmed_levels(symbol, 'support')
         confirmed_resistance = self._get_confirmed_levels(symbol, 'resistance')
 
+        # Update historical bounce levels (cached, refreshes when stale)
+        if self.get_config('historical_bounce_enabled', True):
+            self._update_historical_levels(symbol, current_price)
+
+        # Detect power levels (historical + depth convergence)
+        all_depth_levels = confirmed_support + confirmed_resistance
+        power_levels = self._detect_power_levels(symbol, all_depth_levels, current_price)
+
         # Log current state
         support_str = f"${confirmed_support[0].price:.2f}" if confirmed_support else "none"
         resistance_str = f"${confirmed_resistance[0].price:.2f}" if confirmed_resistance else "none"
+        power_str = f", power_levels={len(power_levels)}" if power_levels else ""
 
-        # Detect pattern from confirmed levels
-        pattern_result = self._detect_pattern(
-            ticker, current_price, symbol, analysis,
-            confirmed_support, confirmed_resistance
+        # Check for Power Level patterns first (they have higher priority)
+        pattern_result = self._detect_pattern_at_power_levels(
+            current_price, symbol, analysis, power_levels
         )
+
+        # Fall back to regular pattern detection if no power level match
+        if pattern_result is None:
+            pattern_result = self._detect_pattern(
+                ticker, current_price, symbol, analysis,
+                confirmed_support, confirmed_resistance
+            )
 
         # Determine pattern name and confidence for logging
         if pattern_result is None:
@@ -237,7 +342,7 @@ class SwingTradingStrategy(BaseStrategy):
         logger.info(
             f"{instance_name} ({symbol}): price=${current_price:.2f}, "
             f"support={support_str}, resistance={resistance_str}, "
-            f"pattern={pattern_name}, confidence={confidence_val:.2f}"
+            f"pattern={pattern_name}, confidence={confidence_val:.2f}{power_str}"
         )
 
         if pattern_result is None:
@@ -600,6 +705,101 @@ class SwingTradingStrategy(BaseStrategy):
         # No pattern at confirmed levels
         return None
 
+    def _detect_pattern_at_power_levels(
+        self,
+        current_price: float,
+        symbol: str,
+        analysis: Dict,
+        power_levels: List[PowerLevel]
+    ) -> Optional[tuple]:
+        """
+        Detect trading patterns at Power Levels with enhanced confidence.
+
+        Power Levels get priority because they combine historical bounce
+        data with real-time depth confirmation.
+
+        Returns:
+            Tuple of (pattern, confidence, price_level, imbalance, metadata)
+            or None if no valid power level pattern
+        """
+        if not power_levels:
+            return None
+
+        imbalance = analysis['imbalance']
+        proximity_pct = self.get_config('zone_proximity_pct', 0.005)
+        confidence_boost = self.get_config('power_level_confidence_boost', 0.15)
+        rejection_flip = self.get_config('rejection_imbalance_flip', 0.60)
+
+        for pl in power_levels:
+            # Skip invalid (weakened) power levels
+            if not pl.is_valid:
+                instance_name = self.get_config('instance_name', self.name)
+                logger.debug(
+                    f"{instance_name} ({symbol}): Skipping weakened power level at ${pl.price:.2f}"
+                )
+                continue
+
+            # Check if price is near this power level
+            if not self.is_price_near_level(current_price, pl.price, proximity_pct):
+                continue
+
+            # Power Level is in play - check for patterns
+            if pl.level_type == 'support':
+                if self._is_bouncing_off_support(current_price, pl.price, symbol):
+                    # Validate imbalance
+                    if imbalance > -rejection_flip:  # Not heavily bearish
+                        confidence = min(1.0, pl.combined_confidence + confidence_boost)
+
+                        instance_name = self.get_config('instance_name', self.name)
+                        logger.info(
+                            f"{instance_name} ({symbol}): POWER LEVEL bounce at ${pl.price:.2f} "
+                            f"(historical bounces: {pl.historical_level.bounce_count}, "
+                            f"depth: {pl.depth_strength}, confidence: {confidence:.2f})"
+                        )
+
+                        return (
+                            Pattern.REJECTION_AT_SUPPORT,
+                            confidence,
+                            pl.price,
+                            imbalance,
+                            {
+                                'zone_size': pl.depth_level.current_volume,
+                                'power_level': True,
+                                'historical_bounces': pl.historical_level.bounce_count,
+                                'depth_strength': pl.depth_strength,
+                                'decayed_strength': pl.historical_level.decayed_strength,
+                            }
+                        )
+
+            elif pl.level_type == 'resistance':
+                if self._is_rejecting_at_resistance(current_price, pl.price, symbol):
+                    # Validate imbalance
+                    if imbalance < rejection_flip:  # Not heavily bullish
+                        confidence = min(1.0, pl.combined_confidence + confidence_boost)
+
+                        instance_name = self.get_config('instance_name', self.name)
+                        logger.info(
+                            f"{instance_name} ({symbol}): POWER LEVEL rejection at ${pl.price:.2f} "
+                            f"(historical bounces: {pl.historical_level.bounce_count}, "
+                            f"depth: {pl.depth_strength}, confidence: {confidence:.2f})"
+                        )
+
+                        return (
+                            Pattern.REJECTION_AT_RESISTANCE,
+                            confidence,
+                            pl.price,
+                            imbalance,
+                            {
+                                'zone_size': pl.depth_level.current_volume,
+                                'power_level': True,
+                                'historical_bounces': pl.historical_level.bounce_count,
+                                'depth_strength': pl.depth_strength,
+                                'decayed_strength': pl.historical_level.decayed_strength,
+                            }
+                        )
+
+        return None
+
     def _is_absorbing(self, symbol: str, level: TrackedLevel,
                        threshold: float) -> bool:
         """
@@ -715,3 +915,399 @@ class SwingTradingStrategy(BaseStrategy):
             'imbalance': analysis['imbalance'],
             'current_price': current_price,
         }
+
+    # =========================================================================
+    # Historical Bounce Detection Methods
+    # =========================================================================
+
+    def set_ib_wrapper(self, wrapper: Any):
+        """Set IB wrapper for historical data fetching."""
+        self._ib_wrapper = wrapper
+
+    def set_trade_db(self, db: Any):
+        """Set trade database for caching."""
+        self._trade_db = db
+
+    def _update_historical_levels(self, symbol: str, current_price: float):
+        """
+        Update historical bounce levels for a symbol if needed.
+
+        Checks cache TTL and fetches fresh data when stale.
+        """
+        if not self.get_config('historical_bounce_enabled', True):
+            return
+
+        cache_ttl = self.get_config('historical_cache_ttl_hours', 24)
+        now = datetime.now()
+
+        # Check if we need to refresh
+        last_update = self._historical_last_update.get(symbol)
+        if last_update:
+            age_hours = (now - last_update).total_seconds() / 3600
+            if age_hours < cache_ttl:
+                return  # Cache is still fresh
+
+        # Try to load from database cache first
+        bars = None
+        bar_size = self.get_config('historical_bar_size', '15 mins')
+
+        if self._trade_db:
+            cached = self._trade_db.get_cached_bars(symbol, bar_size, cache_ttl)
+            if cached:
+                bars = cached
+                logger.debug(f"{self.get_config('instance_name', self.name)}: Using cached bars for {symbol}")
+
+        # Fetch from IB if no cache
+        if bars is None and self._ib_wrapper:
+            lookback_days = self.get_config('historical_lookback_days', 30)
+            duration = f"{lookback_days} D"
+
+            ib_bars = self._ib_wrapper.get_historical_bars(
+                symbol, bar_size=bar_size, duration=duration
+            )
+
+            if ib_bars:
+                # Convert to dict format and cache
+                bars = [
+                    {
+                        'timestamp': bar.date if isinstance(bar.date, datetime) else datetime.fromisoformat(str(bar.date)),
+                        'open': bar.open,
+                        'high': bar.high,
+                        'low': bar.low,
+                        'close': bar.close,
+                        'volume': bar.volume,
+                    }
+                    for bar in ib_bars
+                ]
+
+                if self._trade_db:
+                    self._trade_db.cache_historical_bars(symbol, bar_size, ib_bars)
+
+        if not bars:
+            logger.debug(f"{self.get_config('instance_name', self.name)}: No historical bars for {symbol}")
+            return
+
+        # Identify swing points and bounce levels
+        swing_points = self._identify_swing_points(bars)
+        bounce_levels = self._identify_bounce_levels(swing_points, current_price)
+
+        # Apply decay to all levels
+        for level in bounce_levels:
+            level.decayed_strength = self._apply_decay(level, now)
+
+        # Sort by decayed strength and limit
+        bounce_levels.sort(key=lambda l: l.decayed_strength, reverse=True)
+        max_levels = self.get_config('max_historical_levels', 10)
+        self._historical_levels[symbol] = bounce_levels[:max_levels]
+        self._historical_last_update[symbol] = now
+
+        instance_name = self.get_config('instance_name', self.name)
+        if bounce_levels:
+            logger.info(
+                f"{instance_name} ({symbol}): Identified {len(bounce_levels)} historical bounce levels "
+                f"from {len(swing_points)} swing points"
+            )
+
+    def _identify_swing_points(self, bars: List[Dict]) -> List[SwingPoint]:
+        """
+        Identify swing highs and lows using a local extremum window.
+
+        A swing high is a bar whose high is greater than the highs of
+        the N bars before and after it.
+
+        A swing low is a bar whose low is less than the lows of
+        the N bars before and after it.
+        """
+        swing_points = []
+        window = self.get_config('swing_window', 5)
+        half_window = window // 2
+
+        if len(bars) < window:
+            return []
+
+        for i in range(half_window, len(bars) - half_window):
+            current_bar = bars[i]
+
+            # Check for swing high
+            is_swing_high = True
+            for j in range(i - half_window, i + half_window + 1):
+                if j != i and bars[j]['high'] >= current_bar['high']:
+                    is_swing_high = False
+                    break
+
+            if is_swing_high:
+                swing_points.append(SwingPoint(
+                    price=current_bar['high'],
+                    timestamp=current_bar['timestamp'],
+                    swing_type='high',
+                    bar_index=i
+                ))
+                continue  # A bar can't be both swing high and low
+
+            # Check for swing low
+            is_swing_low = True
+            for j in range(i - half_window, i + half_window + 1):
+                if j != i and bars[j]['low'] <= current_bar['low']:
+                    is_swing_low = False
+                    break
+
+            if is_swing_low:
+                swing_points.append(SwingPoint(
+                    price=current_bar['low'],
+                    timestamp=current_bar['timestamp'],
+                    swing_type='low',
+                    bar_index=i
+                ))
+
+        return swing_points
+
+    def _identify_bounce_levels(self, swing_points: List[SwingPoint],
+                                 current_price: float) -> List[HistoricalBounceLevel]:
+        """
+        Cluster swing points into bounce levels.
+
+        A bounce level is formed when 2+ swing points occur within
+        proximity_pct of each other.
+        """
+        proximity_pct = self.get_config('bounce_proximity_pct', 0.001)
+        min_bounces = self.get_config('min_bounces', 2)
+
+        # Separate swing highs and lows
+        swing_highs = [sp for sp in swing_points if sp.swing_type == 'high']
+        swing_lows = [sp for sp in swing_points if sp.swing_type == 'low']
+
+        levels = []
+
+        # Cluster swing lows into support levels
+        levels.extend(self._cluster_swing_points(
+            swing_lows, 'support', proximity_pct, min_bounces, current_price
+        ))
+
+        # Cluster swing highs into resistance levels
+        levels.extend(self._cluster_swing_points(
+            swing_highs, 'resistance', proximity_pct, min_bounces, current_price
+        ))
+
+        return levels
+
+    def _cluster_swing_points(self, points: List[SwingPoint], level_type: str,
+                               proximity_pct: float, min_bounces: int,
+                               current_price: float) -> List[HistoricalBounceLevel]:
+        """
+        Cluster swing points by price proximity.
+
+        Uses greedy clustering: sort by price, group adjacent points
+        within proximity_pct of the cluster average.
+        """
+        if len(points) < min_bounces:
+            return []
+
+        # Sort by price
+        sorted_points = sorted(points, key=lambda p: p.price)
+
+        clusters: List[List[SwingPoint]] = []
+        current_cluster = [sorted_points[0]]
+
+        for point in sorted_points[1:]:
+            cluster_avg = sum(p.price for p in current_cluster) / len(current_cluster)
+
+            # Check if within proximity (using current price as reference)
+            if abs(point.price - cluster_avg) / current_price <= proximity_pct:
+                current_cluster.append(point)
+            else:
+                # Start new cluster
+                if len(current_cluster) >= min_bounces:
+                    clusters.append(current_cluster)
+                current_cluster = [point]
+
+        # Don't forget the last cluster
+        if len(current_cluster) >= min_bounces:
+            clusters.append(current_cluster)
+
+        # Convert clusters to HistoricalBounceLevel objects
+        levels = []
+        for cluster in clusters:
+            avg_price = sum(p.price for p in cluster) / len(cluster)
+            timestamps = sorted([p.timestamp for p in cluster])
+
+            # Strength based on bounce count (5+ bounces = max strength of 1.0)
+            strength = min(1.0, len(cluster) / 5.0)
+
+            levels.append(HistoricalBounceLevel(
+                price=avg_price,
+                level_type=level_type,
+                bounce_count=len(cluster),
+                first_test=timestamps[0],
+                last_test=timestamps[-1],
+                bounce_timestamps=timestamps,
+                strength=strength,
+                decayed_strength=0.0,  # Calculated separately
+            ))
+
+        return levels
+
+    def _apply_decay(self, level: HistoricalBounceLevel,
+                     current_time: Optional[datetime] = None) -> float:
+        """
+        Apply time decay to a historical level.
+
+        Supports linear or exponential decay based on config.
+        """
+        current_time = current_time or datetime.now()
+        decay_type = self.get_config('decay_type', 'linear')
+
+        if decay_type == 'exponential':
+            return self._apply_exponential_decay(level, current_time)
+        else:
+            return self._apply_linear_decay(level, current_time)
+
+    def _apply_linear_decay(self, level: HistoricalBounceLevel,
+                            current_time: datetime) -> float:
+        """
+        Apply linear time decay to a historical level.
+
+        Formula: decayed_strength = base_strength * (1 - age_days / decay_days)
+        """
+        decay_days = self.get_config('linear_decay_days', 30)
+
+        # Use most recent test for decay calculation
+        age = current_time - level.last_test
+        age_days = age.total_seconds() / 86400
+
+        decay_factor = max(0.0, 1.0 - (age_days / decay_days))
+        return level.strength * decay_factor
+
+    def _apply_exponential_decay(self, level: HistoricalBounceLevel,
+                                  current_time: datetime) -> float:
+        """
+        Apply exponential time decay to a historical level.
+
+        Formula: decayed_strength = base_strength * 2^(-age_days / half_life_days)
+        """
+        import math
+
+        half_life_days = self.get_config('exponential_half_life_days', 15.0)
+
+        age = current_time - level.last_test
+        age_days = age.total_seconds() / 86400
+
+        decay_factor = math.pow(2, -age_days / half_life_days)
+        return level.strength * decay_factor
+
+    def _detect_power_levels(self, symbol: str,
+                              depth_levels: List[TrackedLevel],
+                              current_price: float) -> List[PowerLevel]:
+        """
+        Cross-reference historical bounce levels with real-time depth levels.
+
+        A Power Level occurs when a historical bounce level aligns with
+        a confirmed depth level within proximity_pct.
+        """
+        historical_levels = self._historical_levels.get(symbol, [])
+        if not historical_levels:
+            return []
+
+        power_levels = []
+        proximity_pct = self.get_config('power_level_proximity_pct', 0.005)
+
+        for hist_level in historical_levels:
+            for depth_level in depth_levels:
+                # Skip if types don't match
+                if hist_level.level_type != depth_level.zone_type:
+                    continue
+
+                # Check proximity using percentage of current price
+                proximity = abs(hist_level.price - depth_level.price) / current_price
+
+                if proximity <= proximity_pct:
+                    # Calculate depth strength relative to average
+                    avg_depth = self._get_average_depth_volume(symbol)
+                    depth_strength = self._categorize_depth_strength(
+                        depth_level.current_volume, avg_depth
+                    )
+
+                    # Determine if valid (not weakened)
+                    is_valid = depth_strength != 'weak'
+
+                    # Calculate combined confidence
+                    combined_confidence = self._calculate_power_level_confidence(
+                        hist_level, depth_level, depth_strength
+                    )
+
+                    power_levels.append(PowerLevel(
+                        price=(hist_level.price + depth_level.price) / 2,
+                        level_type=hist_level.level_type,
+                        historical_level=hist_level,
+                        depth_level=depth_level,
+                        combined_confidence=combined_confidence,
+                        depth_strength=depth_strength,
+                        is_valid=is_valid,
+                    ))
+
+        # Store for later use
+        self._power_levels[symbol] = power_levels
+        return power_levels
+
+    def _get_average_depth_volume(self, symbol: str) -> float:
+        """Calculate average depth volume for normalization."""
+        tracked = self._tracked_levels.get(symbol, {})
+        if not tracked:
+            return 10000  # Default fallback
+
+        volumes = [level.current_volume for level in tracked.values()]
+        return sum(volumes) / len(volumes) if volumes else 10000
+
+    def _categorize_depth_strength(self, volume: int, average_volume: float) -> str:
+        """
+        Categorize depth volume relative to average.
+
+        Returns 'weak', 'average', or 'strong'.
+        """
+        weak_threshold = self.get_config('weak_depth_threshold', 0.5)
+        strong_threshold = self.get_config('strong_depth_threshold', 1.5)
+
+        ratio = volume / average_volume if average_volume > 0 else 0
+
+        if ratio < weak_threshold:
+            return 'weak'
+        elif ratio > strong_threshold:
+            return 'strong'
+        else:
+            return 'average'
+
+    def _calculate_power_level_confidence(self, hist_level: HistoricalBounceLevel,
+                                           depth_level: TrackedLevel,
+                                           depth_strength: str) -> float:
+        """
+        Calculate combined confidence for a Power Level.
+
+        Formula:
+        - Start with historical decayed_strength (0.0 - 1.0)
+        - Add depth confidence bonus:
+            - 'strong' depth: +0.2
+            - 'average' depth: +0.1
+            - 'weak' depth: -0.2 (penalty)
+        """
+        base_confidence = hist_level.decayed_strength
+
+        # Depth strength adjustments
+        if depth_strength == 'strong':
+            base_confidence += 0.20
+        elif depth_strength == 'average':
+            base_confidence += 0.10
+        else:  # weak
+            base_confidence -= 0.20
+
+        # Volume-based bonus (normalized, capped at 0.1)
+        volume_bonus = min(0.1, depth_level.current_volume / 50000)
+        base_confidence += volume_bonus
+
+        return max(0.0, min(1.0, base_confidence))
+
+    def get_power_levels(self, symbol: str) -> List[PowerLevel]:
+        """Get current power levels for a symbol (for external access/debugging)."""
+        return self._power_levels.get(symbol, [])
+
+    def get_historical_levels(self, symbol: str) -> List[HistoricalBounceLevel]:
+        """Get current historical bounce levels for a symbol (for external access/debugging)."""
+        return self._historical_levels.get(symbol, [])

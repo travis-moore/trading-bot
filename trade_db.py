@@ -90,6 +90,24 @@ class TradeDatabase:
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            -- Historical price bar caching for bounce detection
+            CREATE TABLE IF NOT EXISTS historical_bars (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol          TEXT NOT NULL,
+                bar_size        TEXT NOT NULL,
+                timestamp       TEXT NOT NULL,
+                open            REAL NOT NULL,
+                high            REAL NOT NULL,
+                low             REAL NOT NULL,
+                close           REAL NOT NULL,
+                volume          INTEGER NOT NULL,
+                fetched_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(symbol, bar_size, timestamp)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_hist_bars_symbol_time
+            ON historical_bars(symbol, bar_size, timestamp);
         """)
         self.conn.commit()
         self._migrate_add_strategy_column()
@@ -657,6 +675,142 @@ class TradeDatabase:
         result = self.get_strategy_budget(strategy_name)
         assert result is not None
         return result
+
+    # =========================================================================
+    # Historical Bar Caching
+    # =========================================================================
+
+    def cache_historical_bars(self, symbol: str, bar_size: str, bars: List) -> int:
+        """
+        Cache historical bars, replacing existing data for this symbol/bar_size.
+
+        Args:
+            symbol: Stock ticker symbol
+            bar_size: Bar size string (e.g., '15 mins')
+            bars: List of BarData objects from IB API with attributes:
+                  date, open, high, low, close, volume
+
+        Returns:
+            Number of bars cached
+        """
+        if not bars:
+            return 0
+
+        # Delete existing bars for this symbol/bar_size
+        self.conn.execute(
+            "DELETE FROM historical_bars WHERE symbol = ? AND bar_size = ?",
+            (symbol, bar_size)
+        )
+
+        # Insert new bars
+        count = 0
+        for bar in bars:
+            try:
+                # BarData.date can be datetime or date object
+                timestamp = bar.date.isoformat() if hasattr(bar.date, 'isoformat') else str(bar.date)
+                self.conn.execute("""
+                    INSERT INTO historical_bars (symbol, bar_size, timestamp, open, high, low, close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (symbol, bar_size, timestamp, bar.open, bar.high, bar.low, bar.close, bar.volume))
+                count += 1
+            except Exception as e:
+                logger.warning(f"Error caching bar for {symbol}: {e}")
+
+        self.conn.commit()
+        logger.info(f"Cached {count} historical bars for {symbol} ({bar_size})")
+        return count
+
+    def get_cached_bars(self, symbol: str, bar_size: str,
+                        max_age_hours: int = 24) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get cached historical bars if fresh enough.
+
+        Args:
+            symbol: Stock ticker symbol
+            bar_size: Bar size string (e.g., '15 mins')
+            max_age_hours: Maximum age of cache in hours
+
+        Returns:
+            List of bar dicts with keys: timestamp, open, high, low, close, volume
+            Returns None if cache is stale or empty
+        """
+        # Check if we have fresh data
+        cursor = self.conn.execute("""
+            SELECT MAX(fetched_at) as last_fetch
+            FROM historical_bars
+            WHERE symbol = ? AND bar_size = ?
+        """, (symbol, bar_size))
+
+        row = cursor.fetchone()
+        if not row or not row['last_fetch']:
+            return None
+
+        # Check age
+        last_fetch = datetime.fromisoformat(row['last_fetch'])
+        age_hours = (datetime.now() - last_fetch).total_seconds() / 3600
+
+        if age_hours > max_age_hours:
+            logger.debug(f"Historical bars cache for {symbol} is stale ({age_hours:.1f}h old)")
+            return None
+
+        # Fetch cached bars
+        cursor = self.conn.execute("""
+            SELECT timestamp, open, high, low, close, volume
+            FROM historical_bars
+            WHERE symbol = ? AND bar_size = ?
+            ORDER BY timestamp ASC
+        """, (symbol, bar_size))
+
+        bars = []
+        for row in cursor.fetchall():
+            bars.append({
+                'timestamp': datetime.fromisoformat(row['timestamp']),
+                'open': row['open'],
+                'high': row['high'],
+                'low': row['low'],
+                'close': row['close'],
+                'volume': row['volume'],
+            })
+
+        if bars:
+            logger.debug(f"Retrieved {len(bars)} cached bars for {symbol} ({bar_size})")
+
+        return bars if bars else None
+
+    def clear_historical_cache(self, symbol: Optional[str] = None,
+                               bar_size: Optional[str] = None) -> int:
+        """
+        Clear historical bar cache.
+
+        Args:
+            symbol: Clear only this symbol (all if None)
+            bar_size: Clear only this bar size (all if None)
+
+        Returns:
+            Number of rows deleted
+        """
+        if symbol and bar_size:
+            cursor = self.conn.execute(
+                "DELETE FROM historical_bars WHERE symbol = ? AND bar_size = ?",
+                (symbol, bar_size)
+            )
+        elif symbol:
+            cursor = self.conn.execute(
+                "DELETE FROM historical_bars WHERE symbol = ?",
+                (symbol,)
+            )
+        elif bar_size:
+            cursor = self.conn.execute(
+                "DELETE FROM historical_bars WHERE bar_size = ?",
+                (bar_size,)
+            )
+        else:
+            cursor = self.conn.execute("DELETE FROM historical_bars")
+
+        self.conn.commit()
+        count = cursor.rowcount
+        logger.info(f"Cleared {count} historical bar cache entries")
+        return count
 
     # =========================================================================
     # Trade Query & Reporting
