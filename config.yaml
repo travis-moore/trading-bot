@@ -97,6 +97,8 @@ strategies:
     zone_proximity_pct: 0.005       # 0.5% proximity (wider)
     min_confidence: 0.75            # Higher confidence required
     zscore_threshold: 3.5           # Stricter level filtering
+    allowed_regimes: ["bull_trend", "range_bound"] # Only trade in favorable regimes
+    min_sector_rs: 0.0              # Only trade if sector is outperforming SPY (positive slope)
     # Historical Bounce Detection
     historical_bounce_enabled: true
     historical_lookback_days: 30    # Days of historical data
@@ -176,6 +178,18 @@ strategies:
     performance_lookback_days: 10
     min_trades_for_feedback: 8
     pnl_baseline: 25.0
+
+  # Momentum Strategies
+  vix_orb_1:
+    type: vix_momentum_orb
+    enabled: true
+    symbols: ["XSP", "QQQ"]
+    budget: 2000
+    orb_minutes: 15
+    target_profit: 300.0
+    contract_cost_basis: 150.0
+    vix_symbol: 'VIX'
+    allowed_regimes: ["bull_trend", "bear_trend", "high_chaos"]
 
   # Options / Spread Strategies
   bull_put_spread_1:

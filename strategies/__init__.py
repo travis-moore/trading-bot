@@ -32,6 +32,7 @@ from .base_strategy import BaseStrategy, StrategySignal, TradeDirection
 from .strategy_manager import StrategyManager
 from .swing_trading import SwingTradingStrategy
 from .scalping import ScalpingStrategy
+from .vix_momentum_orb import VIXMomentumORB
 
 __all__ = [
     'BaseStrategy',
@@ -40,4 +41,5 @@ __all__ = [
     'StrategyManager',
     'SwingTradingStrategy',
     'ScalpingStrategy',
+    'VIXMomentumORB',
 ]

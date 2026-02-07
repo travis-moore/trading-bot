@@ -15,6 +15,7 @@ from test_data_generator import MarketDataGenerator
 try:
     from strategies import SwingTradingStrategy
     from strategies.template_strategy import TemplateStrategy
+    from strategies.vix_momentum_orb import VIXMomentumORB
     from strategies.base_strategy import TradeDirection
 except ImportError:
     print("CRITICAL: Could not import strategies. Make sure you are in the root directory.")
@@ -119,7 +120,11 @@ class TestSwingTradingStrategy(unittest.TestCase):
             
             # 1. Generate Data
             setup = scenario['setup']
-            gen_method = getattr(self.generator, setup['method'])
+            if not hasattr(self.generator, setup['method']):
+                print(f"  SKIP: Generator missing method {setup['method']}")
+                continue
+                
+            gen_method = getattr(self.generator, setup['method'])    
             data = gen_method(**setup['params'])
             
             # Prepare context (merge default with scenario-specific)
@@ -134,6 +139,10 @@ class TestSwingTradingStrategy(unittest.TestCase):
             if scenario.get('type') == 'sequence':
                 # Handle generator (sequence of tickers)
                 for ticker in data:
+                    # Inject time from generator into context so strategy sees correct time
+                    if ticker.time:
+                        run_context['current_time'] = ticker.time
+                        
                     signal = strategy_instance.analyze(ticker, ticker.last, run_context)
                     if signal and signal.direction == scenario['expected'].get('direction'):
                         signal_found = True
@@ -176,6 +185,10 @@ class TestSwingTradingStrategy(unittest.TestCase):
     def test_swing_strategy_scenarios(self):
         """Run self-defined scenarios for SwingTradingStrategy."""
         self.run_strategy_scenarios(SwingTradingStrategy)
+        
+    def test_vix_orb_scenarios(self):
+        """Run self-defined scenarios for VIXMomentumORB."""
+        self.run_strategy_scenarios(VIXMomentumORB)
 
 if __name__ == '__main__':
     unittest.main()

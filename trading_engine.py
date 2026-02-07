@@ -279,49 +279,56 @@ class TradingEngine:
                 if direction == TradeDirection.NO_TRADE:
                     return None
 
-                if self.market_regime_detector and self.sector_manager:
-                    regime = self.market_regime_detector.current_regime
-                    # Get symbol from context if available, or we need to pass it.
-                    # evaluate_signal doesn't take symbol arg, but signal might have it in metadata?
-                    # Actually, we need the symbol to check Sector RS.
-                    # We'll assume the caller (scan_for_signals) handles the signal if we return it,
-                    # but we need to veto here.
-                    # Let's assume signal.metadata has 'symbol' or we skip sector check if missing.
-                    # Wait, scan_for_signals calls this.
+                # Get Strategy Instance and Context
+                strategy_name = signal.metadata.get('strategy')
+                strategy = None
+                if self.strategy_manager and strategy_name:
+                    strategy = self.strategy_manager.get_strategy(strategy_name)
+
+                regime = self.market_regime_detector.current_regime if self.market_regime_detector else None
+                symbol = signal.metadata.get('symbol')
+
+                # --- 1. Market Regime Check ---
+                if regime and strategy:
+                    allowed_regimes = strategy.get_config('allowed_regimes')
                     
-                    # NOTE: To properly implement Sector RS check, we need the symbol.
-                    # Since evaluate_signal signature is fixed in this refactor, 
-                    # we'll rely on the fact that strategies *already* checked regime in their analyze() method
-                    # as per the strategy implementation.
-                    # BUT the prompt says "The engine must evaluate...".
-                    # I will add the checks here assuming I can access global context.
-                    
-                    # Veto Logic
-                    # 1. Bullish Strategies
-                    is_bullish = direction in [TradeDirection.LONG_CALL, TradeDirection.BULL_PUT_SPREAD]
-                    if is_bullish:
-                        if regime == MarketRegime.BEAR_TREND:
+                    if allowed_regimes:
+                        # Explicit Config Check: Strategy defines where it can run
+                        if regime.value not in allowed_regimes:
+                            logger.info(f"VETO: Strategy {strategy_name} blocked in {regime.value} (allowed: {allowed_regimes})")
+                            return None
+                    else:
+                        # Fallback: Default Hardcoded Safety Nets
+                        # 1. Bullish Strategies
+                        is_bullish = direction in [TradeDirection.LONG_CALL, TradeDirection.BULL_PUT_SPREAD]
+                        if is_bullish and regime == MarketRegime.BEAR_TREND:
                             logger.info(f"VETO: Bullish signal blocked by Bear Trend")
                             return None
-                        # Sector RS check requires symbol. If not available, skip.
-                        
-                    # 2. Bearish Strategies
-                    is_bearish = direction in [TradeDirection.LONG_PUT, TradeDirection.BEAR_PUT_SPREAD, TradeDirection.LONG_PUT_STRAIGHT]
-                    if is_bearish:
-                        if regime == MarketRegime.BULL_TREND:
+                            
+                        # 2. Bearish Strategies
+                        is_bearish = direction in [TradeDirection.LONG_PUT, TradeDirection.BEAR_PUT_SPREAD, TradeDirection.LONG_PUT_STRAIGHT]
+                        if is_bearish and regime == MarketRegime.BULL_TREND:
                             logger.info(f"VETO: Bearish signal blocked by Bull Trend")
                             return None
-                            
-                    # 3. Iron Condor
-                    if direction == TradeDirection.IRON_CONDOR:
-                        if regime != MarketRegime.RANGE_BOUND:
+                                
+                        # 3. Iron Condor
+                        if direction == TradeDirection.IRON_CONDOR and regime != MarketRegime.RANGE_BOUND:
                             logger.info(f"VETO: Iron Condor blocked (Regime not Range Bound)")
                             return None
-                            
-                    # 4. High Chaos Veto for Swing
-                    if regime == MarketRegime.HIGH_CHAOS and "scalp" not in str(signal.metadata.get('strategy_type', '')):
-                        logger.info(f"VETO: Swing/Options signal blocked by High Chaos")
-                        return None
+                                
+                        # 4. High Chaos Veto (Swing/Options only)
+                        if regime == MarketRegime.HIGH_CHAOS and "scalp" not in str(signal.metadata.get('strategy_type', '')):
+                            logger.info(f"VETO: Swing/Options signal blocked by High Chaos")
+                            return None
+
+                # --- 2. Sector Rotation Check ---
+                if self.sector_manager and symbol and strategy:
+                    min_rs = strategy.get_config('min_sector_rs')
+                    if min_rs is not None:
+                        sector_rs = self.sector_manager.get_sector_rs(symbol)
+                        if sector_rs < min_rs:
+                            logger.info(f"VETO: Strategy {strategy_name} blocked by Sector RS {sector_rs:.2f} < {min_rs}")
+                            return None
 
                 return direction
 

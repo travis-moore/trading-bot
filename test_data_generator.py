@@ -332,3 +332,57 @@ class MarketDataGenerator:
         for i in range(5):
             current_price += 0.05
             yield self.generate_support_resistance(current_price, support_level, wall_size, is_support=True)
+
+    def simulate_orb_breakout(self, orb_high: float, orb_low: float, 
+                             breakout_price: float, vix_trend: str = "down") -> Generator[Ticker, None, None]:
+        """
+        Yields a sequence simulating an Opening Range Breakout with VIX context.
+        
+        Sequence:
+        1. 9:30-9:45: Price oscillates within orb_high/orb_low to establish range.
+        2. 9:45+: Price breaks out.
+        3. VIX trends in specified direction.
+        """
+        # Set start time to 9:30 AM ET today
+        now = datetime.now()
+        start_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
+        self.current_time = start_time
+        
+        current_price = (orb_high + orb_low) / 2
+        vix_price = 20.0
+        
+        # Phase 1: Establish Range (9:30 - 9:45)
+        # We generate ticks every minute
+        for i in range(16): # 0 to 15 minutes
+            # Oscillate price
+            if i % 2 == 0:
+                tick_price = orb_high - 0.05
+            else:
+                tick_price = orb_low + 0.05
+                
+            # VIX stays flat or choppy
+            vix_price += random.uniform(-0.05, 0.05)
+            
+            ticker = self.generate_ticker(tick_price)
+            ticker.vix_price = vix_price # Attach for testing
+            yield ticker
+            
+            self._advance_time(60) # Advance 1 min
+
+        # Phase 2: Breakout (9:46+)
+        # Move VIX based on trend
+        vix_step = -0.1 if vix_trend == "down" else 0.1
+        
+        # Move price towards breakout
+        target = breakout_price
+        step = (target - current_price) / 5
+        
+        for i in range(5):
+            current_price += step
+            vix_price += vix_step
+            
+            ticker = self.generate_ticker(current_price)
+            ticker.vix_price = vix_price
+            yield ticker
+            
+            self._advance_time(60)

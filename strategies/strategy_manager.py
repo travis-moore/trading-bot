@@ -36,6 +36,7 @@ class StrategyManager:
     BUILTIN_STRATEGIES = {
         'swing_trading': 'strategies.swing_trading.SwingTradingStrategy',
         'scalping': 'strategies.scalping.ScalpingStrategy',
+        'vix_momentum_orb': 'strategies.vix_momentum_orb.VIXMomentumORB',
         'bull_put_spread': 'strategies.options_strategies.BullPutSpreadStrategy',
         'bear_put_spread': 'strategies.options_strategies.BearPutSpreadStrategy',
         'long_put': 'strategies.options_strategies.LongPutStrategy',
