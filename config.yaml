@@ -59,6 +59,11 @@ operation:
   enable_paper_trading: true     # Use paper trading account
   log_level: "INFO"              # DEBUG, INFO, WARNING, ERROR
 
+# Notifications
+notifications:
+  # Create a webhook in Discord: Server Settings > Integrations > Webhooks
+  discord_webhook: "https://discord.com/api/webhooks/1469522939698479177/hO4AcIvyBuWyWqaDFOTMdVUiSJzjdmGOlXkW3GIb7BJebkL2IP3YWPRFfYxAQADageIJ"            # Paste URL here to enable notifications
+
 # Market Regime Settings
 market_regime:
   high_chaos_vix_threshold: 30.0  # VIX level that triggers High Chaos

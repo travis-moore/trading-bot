@@ -761,6 +761,8 @@ class SwingTradingBot:
         elif command.startswith('/export '):
             args = command.split(' ', 1)[1].strip()
             self._cmd_export(args)
+        elif command == '/test_notify':
+            self._cmd_test_notify()
         elif command == '/quit' or command == '/stop':
             self.logger.info("Stop command received")
             self.running = False
@@ -784,6 +786,7 @@ Available commands:
   /metrics [symbol]  - Show detailed performance metrics
   /trades [filters]  - Query trade history (e.g., /trades NVDA winners)
   /export [type]     - Export trades to CSV (trades, report)
+  /test_notify       - Send a test notification to Discord
   /quit or /stop     - Stop the bot gracefully
 """
         print(help_text)
@@ -1082,6 +1085,15 @@ Available commands:
             filepath = f"trades_{timestamp}.csv"
             count = self.db.export_trades_to_csv(filepath)
             print(f"\nExported {count} trades to: {filepath}\n")
+
+    def _cmd_test_notify(self):
+        """Send a test notification to Discord."""
+        if self.notifier:
+            self.notifier.send_message("🔔 **Test Notification** from Swing Trading Bot")
+            self.logger.info("Sent test notification to Discord")
+            print("Notification sent.")
+        else:
+            print("Discord notifier not configured (check config.yaml).")
 
     def run(self):
         """Main bot loop"""
