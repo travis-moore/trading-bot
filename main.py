@@ -150,7 +150,7 @@ class SwingTradingBot:
                 self.notifier.send_message("🤖 **Swing Trading Bot Started**")
             
             # Initialize Market Context
-            self.market_regime = MarketRegimeDetector(self.ib)
+            self.market_regime = MarketRegimeDetector(self.ib, self.config.get('market_regime'))
             self.sector_manager = SectorRotationManager(self.ib)
 
             # Initialize strategy manager if available
@@ -205,9 +205,10 @@ class SwingTradingBot:
                     self.sector_manager.map_symbol_to_sector(symbol, details.get('industry', ''))
 
             # Subscribe to market data for all symbols
+            depth_exchange = self.config['ib_connection'].get('market_depth_exchange', 'ISLAND')
             for symbol in self.config['symbols']:
                 # Level 2 (Depth)
-                ticker = self.ib.subscribe_market_depth(symbol)
+                ticker = self.ib.subscribe_market_depth(symbol, exchange=depth_exchange)
                 if ticker:
                     self.tickers[symbol] = ticker
                     self.logger.info(f"Subscribed to market depth for {symbol}")
@@ -434,12 +435,15 @@ class SwingTradingBot:
                     continue
 
                 # Analyze order book for support/resistance (for logging)
-                analysis = self.analyzer.analyze_book(ticker)
-                nearest = self.analyzer.get_nearest_zones(current_price, analysis)
+                if ticker.domBids and ticker.domAsks:
+                    analysis = self.analyzer.analyze_book(ticker)
+                    nearest = self.analyzer.get_nearest_zones(current_price, analysis)
 
-                # Format support/resistance for logging
-                support_str = f"${nearest['support'].price:.2f}" if nearest['support'] else "none"
-                resistance_str = f"${nearest['resistance'].price:.2f}" if nearest['resistance'] else "none"
+                    support_str = f"${nearest['support'].price:.2f}" if nearest['support'] else "none"
+                    resistance_str = f"${nearest['resistance'].price:.2f}" if nearest['resistance'] else "none"
+                else:
+                    support_str = "no_depth"
+                    resistance_str = "no_depth"
 
                 # Use strategy manager if available, otherwise fall back to legacy analyzer
                 if self.strategy_manager:

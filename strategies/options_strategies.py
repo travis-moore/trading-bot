@@ -25,8 +25,11 @@ class BullPutSpreadStrategy(SwingTradingStrategy):
 
     def analyze(self, ticker: Any, current_price: float, context: Optional[Dict[str, Any]] = None) -> Optional[StrategySignal]:
         # 1. Check Market Regime
+        context = context or {}
         regime = context.get('market_regime', MarketRegime.UNKNOWN)
         if regime != MarketRegime.BULL_TREND:
+            instance_name = self.get_config('instance_name', self.name, symbol=context.get('symbol'))
+            logger.info(f"{instance_name} ({context.get('symbol')}): Skipping - Regime {regime.value} != {MarketRegime.BULL_TREND.value}")
             return None
 
         # 2. Use Swing Strategy logic to detect Support Rejection
@@ -47,6 +50,21 @@ class BullPutSpreadStrategy(SwingTradingStrategy):
             )
         return None
 
+    @classmethod
+    def get_test_scenarios(cls) -> list:
+        return [
+            {
+                "name": "Bull Put Spread (Support Bounce + Bull Trend)",
+                "type": "sequence",
+                "setup": {
+                    "method": "simulate_bounce",
+                    "params": {"start_price": 100.20, "support_level": 100.0}
+                },
+                "context": {"market_regime": MarketRegime.BULL_TREND},
+                "expected": {"direction": TradeDirection.BULL_PUT_SPREAD}
+            }
+        ]
+
 class BearPutSpreadStrategy(SwingTradingStrategy):
     """
     Bear Put Spread (Debit Spread).
@@ -59,8 +77,11 @@ class BearPutSpreadStrategy(SwingTradingStrategy):
 
     def analyze(self, ticker: Any, current_price: float, context: Optional[Dict[str, Any]] = None) -> Optional[StrategySignal]:
         # 1. Check Market Regime
+        context = context or {}
         regime = context.get('market_regime', MarketRegime.UNKNOWN)
         if regime != MarketRegime.BEAR_TREND:
+            instance_name = self.get_config('instance_name', self.name, symbol=context.get('symbol'))
+            logger.info(f"{instance_name} ({context.get('symbol')}): Skipping - Regime {regime.value} != {MarketRegime.BEAR_TREND.value}")
             return None
 
         # 2. Detect Breakout Down (Absorption/Breakout)
@@ -81,6 +102,13 @@ class BearPutSpreadStrategy(SwingTradingStrategy):
                 )
         return None
 
+    @classmethod
+    def get_test_scenarios(cls) -> list:
+        # Note: This relies on SwingStrategy detecting a breakout down (LONG_PUT).
+        # Currently simulate_breakout generates an UP breakout. 
+        # We skip defining a scenario here until we have a simulate_breakout_down generator.
+        return []
+
 class LongPutStrategy(SwingTradingStrategy):
     """
     Long Put.
@@ -93,8 +121,11 @@ class LongPutStrategy(SwingTradingStrategy):
 
     def analyze(self, ticker: Any, current_price: float, context: Optional[Dict[str, Any]] = None) -> Optional[StrategySignal]:
         # 1. Check Market Regime
+        context = context or {}
         regime = context.get('market_regime', MarketRegime.UNKNOWN)
         if regime not in [MarketRegime.BEAR_TREND, MarketRegime.HIGH_CHAOS]:
+            instance_name = self.get_config('instance_name', self.name, symbol=context.get('symbol'))
+            logger.info(f"{instance_name} ({context.get('symbol')}): Skipping - Regime {regime.value} not in [bear_trend, high_chaos]")
             return None
 
         # 2. Detect Breakout Down
@@ -115,6 +146,10 @@ class LongPutStrategy(SwingTradingStrategy):
                         }
                     )
         return None
+    
+    @classmethod
+    def get_test_scenarios(cls) -> list:
+        return []
 
 class IronCondorStrategy(SwingTradingStrategy):
     """
@@ -129,8 +164,11 @@ class IronCondorStrategy(SwingTradingStrategy):
 
     def analyze(self, ticker: Any, current_price: float, context: Optional[Dict[str, Any]] = None) -> Optional[StrategySignal]:
         # 1. Check Market Regime
+        context = context or {}
         regime = context.get('market_regime', MarketRegime.UNKNOWN)
         if regime != MarketRegime.RANGE_BOUND:
+            instance_name = self.get_config('instance_name', self.name, symbol=context.get('symbol'))
+            logger.info(f"{instance_name} ({context.get('symbol')}): Skipping - Regime {regime.value} != {MarketRegime.RANGE_BOUND.value}")
             return None
 
         # 2. Check for Consolidation (Lack of directional signal)
@@ -174,3 +212,18 @@ class IronCondorStrategy(SwingTradingStrategy):
                 )
         
         return None
+
+    @classmethod
+    def get_test_scenarios(cls) -> list:
+        return [
+            {
+                "name": "Iron Condor (Range Bound + Consolidation)",
+                "type": "single",
+                "setup": {
+                    "method": "generate_ticker",
+                    "params": {"price": 100.0} # Balanced ticker = consolidation
+                },
+                "context": {"market_regime": MarketRegime.RANGE_BOUND},
+                "expected": {"direction": TradeDirection.IRON_CONDOR}
+            }
+        ]

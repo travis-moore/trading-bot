@@ -204,6 +204,14 @@ class ScalpingStrategy(BaseStrategy):
                     pattern_name="imbalance_short",
                     metadata=metadata
                 )
+        
+        # Log status when no signal
+        else:
+            instance_name = self.get_config('instance_name', self.name, symbol=symbol)
+            logger.info(
+                f"{instance_name} ({symbol}): imbalance={imbalance:+.2f} "
+                f"(threshold +/-{entry_threshold:.2f}), no signal"
+            )
 
         return None
 
@@ -327,3 +335,29 @@ class ScalpingStrategy(BaseStrategy):
 
         instance_name = self.get_config('instance_name', self.name, symbol=symbol)
         logger.debug(f"{instance_name}: position {symbol} closed - {reason}")
+
+    @classmethod
+    def get_test_scenarios(cls) -> list:
+        """Define test scenarios for the test runner."""
+        return [
+            {
+                "name": "Bullish Imbalance",
+                "description": "Heavy bid volume vs ask volume",
+                "type": "single",
+                "setup": {
+                    "method": "generate_imbalance",
+                    "params": {"price": 100.0, "skew": 0.8}
+                },
+                "expected": {"direction": TradeDirection.LONG_CALL}
+            },
+            {
+                "name": "Bearish Imbalance",
+                "description": "Heavy ask volume vs bid volume",
+                "type": "single",
+                "setup": {
+                    "method": "generate_imbalance",
+                    "params": {"price": 100.0, "skew": 0.2}
+                },
+                "expected": {"direction": TradeDirection.LONG_PUT}
+            }
+        ]

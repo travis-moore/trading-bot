@@ -210,8 +210,9 @@ class SwingTradingStrategy(BaseStrategy):
             'num_levels': 10,                   # Depth levels to analyze for local stats
 
             # Proportional proximity (percentage-based)
-            'zone_proximity_pct': 0.005,        # 0.5% proximity to trigger detection
-            'exclusion_zone_pct': 0.005,        # 0.5% dead zone around price
+            # 'zone_proximity_pct': 0.005,      # OLD: 0.5% proximity
+            'zone_proximity_pct': 0.002,        # 0.2% proximity to trigger detection
+            'exclusion_zone_pct': 0.001,        # 0.1% dead zone around price
 
             # Z-score filtering
             'zscore_threshold': 3.0,            # Min standard deviations for significance
@@ -292,7 +293,7 @@ class SwingTradingStrategy(BaseStrategy):
         """
         context = context or {}
         symbol = context.get('symbol', 'UNKNOWN')
-        now = datetime.now()
+        now = ticker.time if ticker.time else datetime.now()
 
         # Initialize tracking for this symbol
         if symbol not in self._tracked_levels:
@@ -325,8 +326,18 @@ class SwingTradingStrategy(BaseStrategy):
         power_levels = self._detect_power_levels(symbol, all_depth_levels, current_price)
 
         # Log current state
-        support_str = f"${confirmed_support[0].price:.2f}" if confirmed_support else "none"
-        resistance_str = f"${confirmed_resistance[0].price:.2f}" if confirmed_resistance else "none"
+        if confirmed_support:
+            support_str = f"${confirmed_support[0].price:.2f}"
+        else:
+            pending_sup = len([l for l in self._tracked_levels[symbol].values() if l.zone_type == 'support' and l.state == LevelState.PENDING])
+            support_str = f"none ({pending_sup} pending)"
+
+        if confirmed_resistance:
+            resistance_str = f"${confirmed_resistance[0].price:.2f}"
+        else:
+            pending_res = len([l for l in self._tracked_levels[symbol].values() if l.zone_type == 'resistance' and l.state == LevelState.PENDING])
+            resistance_str = f"none ({pending_res} pending)"
+            
         power_str = f", power_levels={len(power_levels)}" if power_levels else ""
 
         # Check for Power Level patterns first (they have higher priority)
@@ -537,20 +548,37 @@ class SwingTradingStrategy(BaseStrategy):
         for price in list(tracked.keys()):
             level = tracked[price]
 
+            # Check if level is in current analysis OR hidden by exclusion zone but in raw data
+            is_present = False
+            current_size = 0
+
             if price in current_prices:
-                # Level still exists - update it
+                is_present = True
                 zone = next(z for z in all_zones if z.price == price)
+                current_size = zone.size
+            else:
+                # Check raw liquidity to see if it's hidden (e.g. inside exclusion zone)
+                raw_liquidity = analysis['raw_bids'] if level.zone_type == 'support' else analysis['raw_asks']
+                if price in raw_liquidity:
+                    size = raw_liquidity[price]
+                    # If size is still significant (e.g. > 50% of initial), assume it's still there
+                    if size > level.initial_volume * 0.5:
+                        is_present = True
+                        current_size = size
+
+            if is_present:
+                # Level still exists - update it
                 level.last_seen = now
-                level.current_volume = zone.size
+                level.current_volume = current_size
 
                 # Check for volume refresh (iceberg behavior)
-                if zone.size > level.current_volume * 0.8:
+                if current_size > level.current_volume * 0.8:
                     level.refresh_count += 1
 
                 # Update volume history for absorption detection
                 if price not in self._volume_history[symbol]:
                     self._volume_history[symbol][price] = []
-                self._volume_history[symbol][price].append(zone.size)
+                self._volume_history[symbol][price].append(current_size)
                 # Keep only last 20 observations
                 self._volume_history[symbol][price] = self._volume_history[symbol][price][-20:]
 
@@ -1201,7 +1229,15 @@ class SwingTradingStrategy(BaseStrategy):
         decay_days = self.get_config('linear_decay_days', 30, symbol=symbol)
 
         # Use most recent test for decay calculation
-        age = current_time - level.last_test
+        last_test = level.last_test
+
+        # Normalize timezones for subtraction
+        if last_test.tzinfo is not None and current_time.tzinfo is None:
+            current_time = current_time.astimezone()
+        elif last_test.tzinfo is None and current_time.tzinfo is not None:
+            last_test = last_test.astimezone()
+
+        age = current_time - last_test
         age_days = age.total_seconds() / 86400
 
         decay_factor = max(0.0, 1.0 - (age_days / decay_days))
@@ -1218,7 +1254,15 @@ class SwingTradingStrategy(BaseStrategy):
 
         half_life_days = self.get_config('exponential_half_life_days', 15.0, symbol=symbol)
 
-        age = current_time - level.last_test
+        last_test = level.last_test
+
+        # Normalize timezones for subtraction
+        if last_test.tzinfo is not None and current_time.tzinfo is None:
+            current_time = current_time.astimezone()
+        elif last_test.tzinfo is None and current_time.tzinfo is not None:
+            last_test = last_test.astimezone()
+
+        age = current_time - last_test
         age_days = age.total_seconds() / 86400
 
         decay_factor = math.pow(2, -age_days / half_life_days)
@@ -1341,3 +1385,33 @@ class SwingTradingStrategy(BaseStrategy):
     def get_historical_levels(self, symbol: str) -> List[HistoricalBounceLevel]:
         """Get current historical bounce levels for a symbol (for external access/debugging)."""
         return self._historical_levels.get(symbol, [])
+
+    @classmethod
+    def get_test_scenarios(cls) -> list:
+        """Define test scenarios for the test runner."""
+        return [
+            {
+                "name": "Support Bounce (Bullish)",
+                "description": "Price drops to support, hits buy wall, bounces up",
+                "type": "sequence",
+                "setup": {
+                    "method": "simulate_bounce",
+                    "params": {"start_price": 100.20, "support_level": 100.0}
+                },
+                "expected": {
+                    "direction": TradeDirection.LONG_CALL
+                }
+            },
+            {
+                "name": "Support Absorption (Bullish)",
+                "description": "Iceberg bid at support absorbs selling pressure",
+                "type": "sequence",
+                "setup": {
+                    "method": "simulate_absorption_support",
+                    "params": {"start_price": 100.20, "support_level": 100.0}
+                },
+                "expected": {
+                    "direction": TradeDirection.LONG_CALL
+                }
+            }
+        ]

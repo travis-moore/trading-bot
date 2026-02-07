@@ -36,6 +36,10 @@ class StrategyManager:
     BUILTIN_STRATEGIES = {
         'swing_trading': 'strategies.swing_trading.SwingTradingStrategy',
         'scalping': 'strategies.scalping.ScalpingStrategy',
+        'bull_put_spread': 'strategies.options_strategies.BullPutSpreadStrategy',
+        'bear_put_spread': 'strategies.options_strategies.BearPutSpreadStrategy',
+        'long_put': 'strategies.options_strategies.LongPutStrategy',
+        'iron_condor': 'strategies.options_strategies.IronCondorStrategy',
     }
 
     def __init__(self, config: Dict[str, Any] = None):

@@ -189,7 +189,8 @@ class IBWrapper:
         duration: str = '30 D',
         what_to_show: str = 'TRADES',
         use_rth: bool = True,
-        exchange: str = 'SMART'
+        exchange: str = 'SMART',
+        sec_type: str = 'STK'
     ) -> Optional[List]:
         """
         Fetch historical OHLCV bars for a symbol.
@@ -205,13 +206,17 @@ class IBWrapper:
             what_to_show: Data type ('TRADES', 'MIDPOINT', 'BID', 'ASK')
             use_rth: Use regular trading hours only (True) or include extended hours (False)
             exchange: Exchange for historical data ('SMART', 'ISLAND', etc.)
+            sec_type: Security type ('STK', 'IND', etc.)
 
         Returns:
             List of BarData objects with attributes: date, open, high, low, close, volume
             Returns None if error occurs
         """
         try:
-            contract = Stock(symbol, exchange, 'USD')
+            if sec_type == 'IND':
+                contract = Index(symbol, exchange, 'USD')
+            else:
+                contract = Stock(symbol, exchange, 'USD')
             self.ib.qualifyContracts(contract)
 
             bars = self.ib.reqHistoricalData(
@@ -523,7 +528,8 @@ class IBWrapper:
         try:
             contract = Stock(symbol, exchange, 'USD')
             self.ib.qualifyContracts(contract)
-            ticker = self.ib.reqMktDepth(contract, numRows=num_rows)
+            is_smart = (exchange.upper() == 'SMART')
+            ticker = self.ib.reqMktDepth(contract, numRows=num_rows, isSmartDepth=is_smart)
             self.ib.sleep(2)
             logger.info(f"Subscribed to market depth for {symbol}")
             return ticker

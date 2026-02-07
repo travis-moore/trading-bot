@@ -167,6 +167,46 @@ class TemplateStrategy(BaseStrategy):
             f"reason={reason}"
         )
 
+    @classmethod
+    def get_test_scenarios(cls) -> list:
+        """
+        Define test scenarios for this strategy.
+        
+        The test runner (test_strategies.py) uses this to generate data 
+        and verify the strategy behaves as expected.
+        
+        Returns:
+            List of dictionaries, where each dict describes a test scenario.
+        """
+        return [
+            # Example 1: Single Ticker Test
+            {
+                "name": "Bullish Imbalance",
+                "description": "Should buy when bids significantly outweigh asks",
+                "type": "single",  # 'single' ticker or 'sequence' of tickers
+                "setup": {
+                    "method": "generate_imbalance",  # Method in MarketDataGenerator
+                    "params": {"price": 100.0, "skew": 0.8}
+                },
+                "expected": {
+                    # Template returns None by default, so we expect no signal
+                    # "direction": TradeDirection.LONG_CALL, 
+                }
+            },
+            # Example 2: Sequence Test (e.g. for bounces)
+            # {
+            #     "name": "Support Bounce",
+            #     "type": "sequence",
+            #     "setup": {
+            #         "method": "simulate_bounce",
+            #         "params": {"start_price": 101.0, "support_level": 100.0}
+            #     },
+            #     "expected": {
+            #         "direction": TradeDirection.LONG_CALL
+            #     }
+            # }
+        ]
+
 
 # =============================================================================
 # QUICK REFERENCE

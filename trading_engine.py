@@ -326,9 +326,6 @@ class TradingEngine:
                 return direction
 
         # Legacy PatternSignal handling
-                    return None
-
-        # Legacy PatternSignal handling
         for rule in self.rules:
             if rule.pattern == signal.pattern and signal.confidence >= rule.min_confidence:
                 logger.info(f"Signal matches rule: {rule.entry_condition}")
@@ -427,17 +424,19 @@ class TradingEngine:
         # The chain already contains only valid strikes for this symbol
         sorted_strikes = sorted(chain.strikes, key=lambda x: abs(x - target_strike))
         
-        # Try up to 10 closest strikes (increased from 5)
-        max_attempts = min(10, len(sorted_strikes))
-        
-        for i, strike in enumerate(sorted_strikes[:max_attempts]):
-            # Use quiet=True to suppress warnings when probing for valid strikes
-            contract = self.ib.find_option_contract(symbol, strike, expiry, right, quiet=True)
+        # Try up to 3 expirations to find a valid contract
+        # Some strikes only exist for monthly expirations, etc.
+        for expiry in expiries[:3]:
+            # Try up to 20 closest strikes per expiration to increase chances of finding a match
+            for i, strike in enumerate(sorted_strikes[:20]):
+                # Use quiet=True to suppress warnings when probing for valid strikes
+                # check_prices=False to speed up selection (we check price later in enter_trade)
+                contract = self.ib.find_option_contract(symbol, strike, expiry, right, check_prices=False, quiet=True)
 
-            # Check if contract was qualified (localSymbol gets populated)
-            if contract and hasattr(contract, 'localSymbol') and contract.localSymbol:
-                logger.info(f"Selected option: {contract.localSymbol} (tried {i+1} strikes)")
-                return contract
+                # Check if contract was qualified (localSymbol gets populated)
+                if contract and hasattr(contract, 'localSymbol') and contract.localSymbol:
+                    logger.info(f"Selected option: {contract.localSymbol} (expiry {expiry}, strike {strike})")
+                    return contract
 
         logger.error(f"Could not find valid option contract for {symbol} near ${target_strike:.2f}")
         return None
