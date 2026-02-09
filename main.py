@@ -524,7 +524,7 @@ class SwingTradingBot:
 
         # Determine symbols to scan (Sequential vs Parallel)
         is_sequential = self.config['ib_connection'].get('sequential_scanning', False)
-        symbols_to_scan = self.config['symbols'] if is_sequential else list(self.tickers.keys())
+        symbols_to_scan = self.config['symbols']
 
         for symbol in symbols_to_scan:
             ticker = None
@@ -536,7 +536,7 @@ class SwingTradingBot:
                 ticker = self.ib.subscribe_market_depth(symbol, exchange=depth_exchange, quiet=True)
                 # Note: subscribe_market_depth already sleeps 2s to allow data to populate
             else:
-                ticker = self.tickers.get(symbol)
+                ticker = self.tickers.get(symbol) # Might be None if depth failed (e.g. XSP)
 
             try:
                 # Get current price
@@ -547,7 +547,7 @@ class SwingTradingBot:
 
                 # Always analyze book if we need it for logging or trading
                 analysis = None
-                if ticker.domBids and ticker.domAsks:
+                if ticker and ticker.domBids and ticker.domAsks:
                     analysis = self.analyzer.analyze_book(ticker)
                 elif self.data_writer:
                     # If logging is on but no depth, get empty analysis so we can still log price/spread
@@ -560,7 +560,7 @@ class SwingTradingBot:
                     }
 
                 # Analyze order book for support/resistance (for logging)
-                if analysis and ticker.domBids and ticker.domAsks:
+                if analysis and ticker and ticker.domBids and ticker.domAsks:
                     nearest = self.analyzer.get_nearest_zones(current_price, analysis)
                     support_str = f"${nearest['support'].price:.2f}" if nearest['support'] else "none"
                     resistance_str = f"${nearest['resistance'].price:.2f}" if nearest['resistance'] else "none"
@@ -582,7 +582,7 @@ class SwingTradingBot:
                         'market_regime': self.market_regime.current_regime,
                         'sector_rs': self.sector_manager.get_sector_rs(symbol)
                     }
-                    signals = self.strategy_manager.analyze_all(ticker, current_price, context)
+                    signals = self.strategy_manager.analyze_all(ticker, current_price, context) # ticker can be None
 
                     for signal in signals:
                         # Get strategy instance info from signal metadata
@@ -623,7 +623,7 @@ class SwingTradingBot:
                             self._handle_trade_signal(symbol, direction, signal, current_price)
                 else:
                     # Legacy path: use analyzer directly
-                    signal = self.analyzer.detect_pattern(ticker, current_price)
+                    signal = self.analyzer.detect_pattern(ticker, current_price) if ticker else None
 
                     if signal is None:
                         continue

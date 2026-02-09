@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 class IBWrapper:
     """Wrapper for Interactive Brokers API operations"""
     
+    # Common indices that require secType='IND'
+    KNOWN_INDICES = {'SPX', 'VIX', 'NDX', 'RUT', 'XSP', 'DJX'}
+
     def __init__(self, host='127.0.0.1', port=7497, client_id=1):
         self.ib = IB()
         self.host = host
@@ -83,7 +86,11 @@ class IBWrapper:
         """
         try:
             # Use ISLAND (NASDAQ) exchange for better data availability
-            contract = Stock(symbol, 'ISLAND', 'USD')
+            if symbol in self.KNOWN_INDICES:
+                contract = Index(symbol, 'CBOE' if symbol in ['VIX', 'XSP', 'SPX'] else 'SMART', 'USD')
+            else:
+                contract = Stock(symbol, 'ISLAND', 'USD')
+                
             self.ib.qualifyContracts(contract)
             
             # Request market data
@@ -118,7 +125,11 @@ class IBWrapper:
             self.ib.cancelMktData(contract)
             logger.warning(f"No data on ISLAND, trying SMART for {symbol}")
             
-            contract = Stock(symbol, 'SMART', 'USD')
+            if symbol in self.KNOWN_INDICES:
+                contract = Index(symbol, 'SMART', 'USD')
+            else:
+                contract = Stock(symbol, 'SMART', 'USD')
+                
             self.ib.qualifyContracts(contract)
             ticker = self.ib.reqMktData(contract, '', False, False)
             
@@ -154,7 +165,11 @@ class IBWrapper:
         Returns a Ticker object that will be automatically updated.
         """
         try:
-            contract = Stock(symbol, exchange, 'USD')
+            if symbol in self.KNOWN_INDICES:
+                # Indices usually don't trade on ISLAND/NASDAQ, default to CBOE or SMART
+                contract = Index(symbol, 'CBOE' if symbol in ['VIX', 'XSP', 'SPX'] else 'SMART', 'USD')
+            else:
+                contract = Stock(symbol, exchange, 'USD')
             self.ib.qualifyContracts(contract)
             # Request generic ticks: 233 (RTVolume), 221 (Mark Price)
             ticker = self.ib.reqMktData(contract, '', False, False)
@@ -254,7 +269,10 @@ class IBWrapper:
             List of option contracts
         """
         try:
-            stock = Stock(symbol, 'SMART', 'USD')
+            if symbol in self.KNOWN_INDICES:
+                stock = Index(symbol, 'SMART', 'USD')
+            else:
+                stock = Stock(symbol, 'SMART', 'USD')
             self.ib.qualifyContracts(stock)
             
             chains = self.ib.reqSecDefOptParams(
@@ -527,6 +545,10 @@ class IBWrapper:
             Ticker object with depth data
         """
         try:
+            if symbol in self.KNOWN_INDICES:
+                # Indices typically don't have Level 2 depth available via API in the same way
+                # We return None to indicate depth is not available
+                return None
             contract = Stock(symbol, exchange, 'USD')
             self.ib.qualifyContracts(contract)
             is_smart = (exchange.upper() == 'SMART')
