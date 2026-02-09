@@ -18,6 +18,14 @@ from datetime import datetime, time as dt_time
 from typing import Dict
 from zoneinfo import ZoneInfo
 
+# Try to import colorama for proper Windows color support
+try:
+    import colorama
+    colorama.init()
+    COLORAMA_AVAILABLE = True
+except ImportError:
+    COLORAMA_AVAILABLE = False
+
 # Fix for ib_insync/eventkit import error on newer Python versions
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -57,6 +65,17 @@ class ColoredFormatter(logging.Formatter):
     
     def __init__(self, fmt=None, datefmt=None):
         super().__init__(fmt, datefmt)
+        
+        # Disable colors on Windows if colorama is not available to prevent line wrapping bugs
+        if sys.platform == 'win32' and not COLORAMA_AVAILABLE:
+            self.GREY = ""
+            self.GREEN = ""
+            self.YELLOW = ""
+            self.RED = ""
+            self.BOLD_RED = ""
+            self.RESET = ""
+            self.CYAN = ""
+            
         self.fmt = fmt or '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         self.FORMATS = {
             logging.DEBUG: self.GREY + self.fmt + self.RESET,
@@ -1396,10 +1415,6 @@ Available commands:
 
 def main():
     """Entry point"""
-    # Enable ANSI colors on Windows
-    if sys.platform == 'win32':
-        os.system('')
-        
     print("""
     ╔═══════════════════════════════════════════════════════════╗
     ║         SWING TRADING BOT - Options Trading System        ║

@@ -9,6 +9,9 @@ PyYAML>=6.0
 # HTTP Client
 requests
 
+# Terminal Colors (Windows support)
+colorama
+
 # Data handling (optional but recommended)
 pandas>=2.0.0
 numpy>=1.24.0
