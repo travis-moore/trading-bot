@@ -416,6 +416,7 @@ class TradingEngine:
             strike_pct = self.config.get('put_strike_pct', 0.98)
             right = 'P'
         else:
+            logger.error(f"Invalid trade direction for option selection: {direction}")
             return None
         
         target_strike = current_price * strike_pct
@@ -426,6 +427,8 @@ class TradingEngine:
         if not chain.strikes:
             logger.error(f"No strikes available in chain for {symbol}")
             return None
+            
+        logger.info(f"Selecting option for {symbol}: {direction.value} (Right: {right}), Target: ${target_strike:.2f} (Price: ${current_price:.2f})")
         
         # Sort all available strikes by proximity to target
         # The chain already contains only valid strikes for this symbol
@@ -434,6 +437,7 @@ class TradingEngine:
         # Try up to 3 expirations to find a valid contract
         # Some strikes only exist for monthly expirations, etc.
         for expiry in expiries[:3]:
+            logger.debug(f"Checking expiry {expiry} for {symbol}...")
             # Try up to 30 closest strikes per expiration to increase chances of finding a match
             for i, strike in enumerate(sorted_strikes[:30]):
                 # Use quiet=True to suppress warnings when probing for valid strikes

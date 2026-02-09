@@ -300,7 +300,7 @@ class IBWrapper:
                 if min_date <= datetime.strptime(exp, '%Y%m%d').date() <= max_date
             ]
             
-            logger.info(f"Found {len(valid_expiries)} valid expirations for {symbol}")
+            logger.info(f"Found {len(valid_expiries)} valid expirations for {symbol} ({len(chain.strikes)} strikes)")
             return chain, valid_expiries
             
         except Exception as e:
