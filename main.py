@@ -11,9 +11,18 @@ import signal
 import sys
 import threading
 import select
+import asyncio
 from datetime import datetime, time as dt_time
 from typing import Dict
 from zoneinfo import ZoneInfo
+
+# Fix for ib_insync/eventkit import error on newer Python versions
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 from ib_insync import Contract
 from ib_wrapper import IBWrapper
