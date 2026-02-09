@@ -38,6 +38,7 @@ class VIXMomentumORB(BaseStrategy):
         
         # VIX History: List[Tuple[datetime, float]]
         self._vix_history: List[Tuple[datetime, float]] = []
+        self._last_log_time: Dict[str, datetime] = {}
 
     @property
     def name(self) -> str:
@@ -68,6 +69,14 @@ class VIXMomentumORB(BaseStrategy):
     def set_ib_wrapper(self, wrapper: Any):
         """Set IB wrapper to access data for other symbols (VIX, SPY)."""
         self._ib_wrapper = wrapper
+
+    def _log_throttled(self, symbol: str, message: str, level=logging.INFO, interval_seconds=60):
+        """Log a message at most once every interval_seconds."""
+        now = datetime.now()
+        last = self._last_log_time.get(symbol)
+        if not last or (now - last).total_seconds() > interval_seconds:
+            logger.log(level, message)
+            self._last_log_time[symbol] = now
 
     def analyze(self, ticker: Any, current_price: float,
                 context: Dict[str, Any] = None) -> Optional[StrategySignal]:
@@ -114,11 +123,18 @@ class VIXMomentumORB(BaseStrategy):
             self._orb_high[symbol] = max(self._orb_high[symbol], current_price)
             self._orb_low[symbol] = min(self._orb_low[symbol], current_price)
             self._orb_complete[symbol] = False
+            self._log_throttled(symbol, f"[{self.name}] Building ORB: {self._orb_low[symbol]:.2f} - {self._orb_high[symbol]:.2f}", level=logging.DEBUG)
             return None
         elif now >= orb_end:
+            if not self._orb_complete[symbol]:
+                logger.info(f"[{self.name}] {symbol}: ORB Established: {self._orb_low[symbol]:.2f} - {self._orb_high[symbol]:.2f}")
             self._orb_complete[symbol] = True
         else:
             # Before market open
+            time_until_open = market_open - now
+            hours, remainder = divmod(time_until_open.total_seconds(), 3600)
+            minutes, _ = divmod(remainder, 60)
+            self._log_throttled(symbol, f"[{self.name}] Market opens in {int(hours)}h {int(minutes)}m", level=logging.INFO)
             return None
 
         # 5. Trading Window Check (9:45 - 10:15)
@@ -133,6 +149,7 @@ class VIXMomentumORB(BaseStrategy):
             spread_pct = spread / mid
             if spread_pct > self.get_config('spread_threshold_pct', 0.05):
                 logger.debug(f"{symbol}: Spread too wide ({spread_pct:.1%}), skipping")
+                self._log_throttled(symbol, f"[{self.name}] Spread too wide ({spread_pct:.1%})", level=logging.WARNING)
                 return None
 
         # 7. VIX Analysis
@@ -146,11 +163,15 @@ class VIXMomentumORB(BaseStrategy):
             vix_price = self._get_market_price(vix_symbol)
         
         if not vix_price:
+            self._log_throttled(symbol, f"[{self.name}] VIX price unavailable for {vix_symbol}", level=logging.WARNING)
             return None
             
         # Update VIX history
         self._update_vix_history(now, vix_price)
         vix_slope = self._calculate_vix_slope()
+        
+        # Log status periodically
+        self._log_throttled(symbol, f"[{self.name}] Monitoring: Price=${current_price:.2f} ORB=[{self._orb_low[symbol]:.2f}-{self._orb_high[symbol]:.2f}] VIX_Slope={vix_slope:.4f}", level=logging.INFO)
         
         # 8. Signal Logic
         signal = None
