@@ -116,6 +116,9 @@ class ScalpingStrategy(BaseStrategy):
         context = context or {}
         symbol = context.get('symbol', 'UNKNOWN')
 
+        if ticker is None:
+            return None
+
         # Increment tick counter for this symbol
         self._tick_counts[symbol] = self._tick_counts.get(symbol, 0) + 1
         tick = self._tick_counts[symbol]

@@ -283,8 +283,12 @@ class IBWrapper:
                 logger.warning(f"No option chains found for {symbol}")
                 return []
             
-            # Get chain for primary exchange
-            chain = next((c for c in chains if c.exchange == 'SMART'), chains[0])
+            # Get chain for primary exchange (SMART preferred)
+            # Select the chain with the most expirations/strikes to ensure we get the main chain
+            smart_chains = [c for c in chains if c.exchange == 'SMART']
+            candidates = smart_chains if smart_chains else chains
+            # Sort by number of expirations (desc) then strikes (desc)
+            chain = sorted(candidates, key=lambda c: (len(c.expirations), len(c.strikes)), reverse=True)[0]
             
             # Filter expirations by date range
             today = datetime.now().date()

@@ -293,6 +293,10 @@ class SwingTradingStrategy(BaseStrategy):
         """
         context = context or {}
         symbol = context.get('symbol', 'UNKNOWN')
+        
+        if ticker is None:
+            return None
+            
         now = ticker.time if ticker.time else datetime.now()
 
         # Initialize tracking for this symbol
@@ -428,7 +432,7 @@ class SwingTradingStrategy(BaseStrategy):
         - Statistically significant (>3σ above local average)
         - Outside the exclusion zone (±0.5% from current price)
         """
-        if not ticker.domBids or not ticker.domAsks:
+        if ticker is None or not ticker.domBids or not ticker.domAsks:
             return {
                 'support': [],
                 'resistance': [],

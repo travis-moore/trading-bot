@@ -434,8 +434,8 @@ class TradingEngine:
         # Try up to 3 expirations to find a valid contract
         # Some strikes only exist for monthly expirations, etc.
         for expiry in expiries[:3]:
-            # Try up to 20 closest strikes per expiration to increase chances of finding a match
-            for i, strike in enumerate(sorted_strikes[:20]):
+            # Try up to 30 closest strikes per expiration to increase chances of finding a match
+            for i, strike in enumerate(sorted_strikes[:30]):
                 # Use quiet=True to suppress warnings when probing for valid strikes
                 # check_prices=False to speed up selection (we check price later in enter_trade)
                 contract = self.ib.find_option_contract(symbol, strike, expiry, right, check_prices=False, quiet=True)
@@ -445,7 +445,7 @@ class TradingEngine:
                     logger.info(f"Selected option: {contract.localSymbol} (expiry {expiry}, strike {strike})")
                     return contract
 
-        logger.error(f"Could not find valid option contract for {symbol} near ${target_strike:.2f}")
+        logger.error(f"Could not find valid option contract for {symbol} near ${target_strike:.2f} (checked {len(expiries[:3])} expiries)")
         return None
     
     def _round_strike(self, target_strike: float, available_strikes: List[float]) -> float:
