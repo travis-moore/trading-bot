@@ -35,18 +35,26 @@ This strategy waits for price to hit a "wall" and bounce. It's like playing ping
 *   **Bearish:** Price rallies to a massive Sell Wall (Resistance). Buyers can't break through. Price rejects down. -> **Buy Put Options**.
 
 <details>
-<summary><strong>⚙️ Specific Entry Triggers</strong></summary>
+<summary><strong>⚙️ Entry & Exit Conditions</strong></summary>
 
-*   **Rejection at Support:**
-    *   Price enters the "Proximity Zone" (e.g., within 0.2% of the wall).
-    *   Price ticks UP away from the wall.
-    *   Order flow shows buyers stepping in (Positive Imbalance).
-    *   **Action:** Buy Call.
+### 🟢 Entry Conditions
+1.  **Rejection at Support (Long Call):**
+    *   **Price:** Inside Support Zone (within 0.5% of level).
+    *   **Order Flow:** Positive Imbalance (Buyers > Sellers).
+    *   **Confidence:** > 65%.
+2.  **Rejection at Resistance (Long Put):**
+    *   **Price:** Inside Resistance Zone (within 0.5% of level).
+    *   **Order Flow:** Negative Imbalance (Sellers > Buyers).
+    *   **Confidence:** > 65%.
+3.  **Absorption Breakout:**
+    *   **Pattern:** Wall size decreases significantly (orders consumed) while price holds.
+    *   **Confidence:** > 70%.
 
-*   **Absorption Breakout (The "Sledgehammer"):**
-    *   Price hits a wall.
-    *   The wall doesn't move, but volume is trading heavily (the wall is being "eaten").
-    *   If the wall breaks -> **Trade with the breakout**.
+### 🔴 Exit Conditions
+*   **Take Profit:** +50% gain on option premium.
+*   **Stop Loss:** -30% loss on option premium.
+*   **Trailing Stop:** Activates at +10% profit, trails peak by 5%.
+*   **Time Limit:** 30 days max hold.
 
 </details>
 </details>
@@ -60,17 +68,26 @@ This strategy is for speed. It doesn't care about levels; it cares about **Aggre
 *   **Action:** Jump in, grab a small profit, jump out.
 
 <details>
-<summary><strong>⏱️ The "Time Decay" Exit</strong></summary>
+<summary><strong>⚙️ Entry & Exit Conditions</strong></summary>
 
-Scalping is dangerous if price stalls.
-*   **The Rule:** If the trade doesn't move in our favor within **5 ticks** (price changes), the bot exits immediately.
-*   **Why?** Momentum trades rely on speed. If it stops, the edge is gone.
+### 🟢 Entry Conditions
+1.  **Bullish Scalp:**
+    *   **Imbalance:** > 0.7 (70% Buy Orders).
+    *   **Confidence:** > 70%.
+2.  **Bearish Scalp:**
+    *   **Imbalance:** < 0.3 (70% Sell Orders).
+    *   **Confidence:** > 70%.
+
+### 🔴 Exit Conditions
+*   **Take Profit:** +50% (often manual or quick targets).
+*   **Stop Loss:** -30%.
+*   **Stall Exit (Time Decay):** If price does not move favorably within **3-5 ticks**, exit immediately.
 
 </details>
 </details>
 
 <details>
-<summary><strong>📊 Strategy C: VIX Momentum (Market Sentiment)</strong></summary>
+<summary><strong>📊 Strategy C: VIX Momentum ORB (Market Sentiment)</strong></summary>
 
 This strategy watches the "Fear Gauge" (VIX) to confirm moves in the indices (QQQ/SPY).
 
@@ -78,11 +95,51 @@ This strategy watches the "Fear Gauge" (VIX) to confirm moves in the indices (QQ
 *   **The Trigger:** If price breaks that range *AND* the VIX confirms it.
 
 <details>
-<summary><strong>✅ Confirmation Logic</strong></summary>
+<summary><strong>⚙️ Entry & Exit Conditions</strong></summary>
 
-*   **Bullish Breakout:** Stock Price > 15-min High **AND** VIX is crashing (Fear is dropping).
-*   **Bearish Breakout:** Stock Price < 15-min Low **AND** VIX is spiking (Fear is rising).
-*   **The Filter:** If Stock goes UP but VIX also goes UP (Divergence), the bot stays out. It's a trap.
+### 🟢 Entry Conditions
+1.  **Bullish Breakout:**
+    *   **Time:** 9:45 AM - 10:15 AM ET.
+    *   **Price:** Breaks above 15-min High (established 9:30-9:45).
+    *   **VIX:** Slope is Negative (Fear decreasing).
+2.  **Bearish Breakout:**
+    *   **Time:** 9:45 AM - 10:15 AM ET.
+    *   **Price:** Breaks below 15-min Low.
+    *   **VIX:** Slope is Positive (Fear increasing).
+*   **Filter:** "One-and-Done" (Max 1 trade per symbol per day).
+
+### 🔴 Exit Conditions
+*   **Profit Target:** Fixed $300 profit per contract.
+*   **Stop Loss:** Standard bracket (30%).
+
+</details>
+</details>
+
+<details>
+<summary><strong>🧩 Strategy D: Market Regime Fitted Option Strategies</strong></summary>
+
+These strategies are specialized variations that use **Market Regimes** to select the perfect instrument. Instead of just buying a Call or Put, they might trade spreads to lower cost or profit from time decay.
+
+<details>
+<summary><strong>⚙️ Entry & Exit Conditions</strong></summary>
+
+### 🟢 Entry Conditions
+*   **Bull Put Spread:**
+    *   **Regime:** Bull Trend.
+    *   **Signal:** Rejection at Support (Confidence > 70%).
+*   **Bear Put Spread:**
+    *   **Regime:** Bear Trend.
+    *   **Signal:** Absorption Breakout Down (Confidence > 70%).
+*   **Iron Condor:**
+    *   **Regime:** Range Bound.
+    *   **Signal:** General Confidence > 80%.
+*   **Crash Protection (Long Put):**
+    *   **Regime:** High Chaos OR Bear Trend.
+    *   **Signal:** Absorption Breakout Down (Confidence > 75%).
+
+### 🔴 Exit Conditions
+*   **Take Profit:** +50% gain.
+*   **Stop Loss:** -30% loss.
 
 </details>
 </details>

@@ -132,6 +132,7 @@ strategies:
     zone_proximity_pct: 0.003       # 0.3% proximity (tighter)
     min_confidence: 0.65            # Lower confidence threshold
     zscore_threshold: 2.5           # More levels considered
+    allowed_regimes: ["bull_trend", "bear_trend", "range_bound"]
     # Historical Bounce Detection - more aggressive settings
     historical_bounce_enabled: true
     historical_lookback_days: 20    # Shorter lookback (more recent data)
@@ -159,6 +160,7 @@ strategies:
     max_positions: 1                # Scalping = one position at a time
     imbalance_entry_threshold: 0.7
     max_ticks_without_progress: 3   # Quick exit
+    allowed_regimes: ["bull_trend", "bear_trend", "range_bound", "high_chaos"]
     # Performance Feedback
     performance_feedback_enabled: true
     performance_lookback_days: 7    # Shorter window for scalping
@@ -173,6 +175,7 @@ strategies:
     max_positions: 1                # Scalping = one position at a time
     imbalance_entry_threshold: 0.8  # Higher threshold
     max_ticks_without_progress: 7   # More patience
+    allowed_regimes: ["bull_trend", "bear_trend", "range_bound"]
     # Performance Feedback
     performance_feedback_enabled: true
     performance_lookback_days: 10
@@ -200,6 +203,7 @@ strategies:
     max_positions: 2
     zone_proximity_pct: 0.005
     rejection_support_confidence: 0.70 # Specific param for Bull Put (Support Rejection)
+    allowed_regimes: ["bull_trend", "range_bound"]
 
   bear_put_spread_1:
     type: bear_put_spread
@@ -209,6 +213,7 @@ strategies:
     max_positions: 2
     zone_proximity_pct: 0.005
     absorption_confidence: 0.70     # Specific param for Bear Put (Breakout Down)
+    allowed_regimes: ["bear_trend"]
 
   long_put_1:
     type: long_put
@@ -218,6 +223,7 @@ strategies:
     max_positions: 2
     zone_proximity_pct: 0.005
     absorption_confidence: 0.75     # Specific param for Long Put (Breakout Down)
+    allowed_regimes: ["bear_trend", "high_chaos"]
 
   iron_condor_1:
     type: iron_condor
@@ -227,3 +233,4 @@ strategies:
     max_positions: 2
     zone_proximity_pct: 0.005
     min_confidence: 0.80
+    allowed_regimes: ["range_bound"]

@@ -22,6 +22,7 @@ main.py                    # Main orchestrator, CLI commands
     ├── base_strategy.py       # Abstract base class
     ├── strategy_manager.py    # Plugin loader & orchestrator
     ├── swing_trading.py       # Swing trading strategy
+    ├── vix_momentum_orb.py    # VIX Momentum ORB strategy
     └── scalping.py            # Scalping strategy
 ```
 
@@ -152,23 +153,23 @@ Press `Ctrl+C` for graceful shutdown, or type `/quit` in the terminal.
 
 While running, the bot accepts these commands:
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show all available commands |
-| `/status` | Show bot status and statistics |
-| `/positions` | List current open positions |
-| `/strategies` | List all strategies and their status |
-| `/enable <name>` | Enable a strategy |
-| `/disable <name>` | Disable a strategy |
-| `/reload` | Hot-reload all strategies from disk |
-| `/reload <name>` | Reload a specific strategy |
-| `/discover` | Discover and load new strategy files |
-| `/budgets` | Show per-strategy budget status |
-| `/pnl` | Show P&L breakdown by strategy |
-| `/metrics [symbol]` | Show detailed performance metrics |
+| Command             | Description                                        |
+| ------------------- | -------------------------------------------------- |
+| `/help`             | Show all available commands                        |
+| `/status`           | Show bot status and statistics                     |
+| `/positions`        | List current open positions                        |
+| `/strategies`       | List all strategies and their status               |
+| `/enable <name>`    | Enable a strategy                                  |
+| `/disable <name>`   | Disable a strategy                                 |
+| `/reload`           | Hot-reload all strategies from disk                |
+| `/reload <name>`    | Reload a specific strategy                         |
+| `/discover`         | Discover and load new strategy files               |
+| `/budgets`          | Show per-strategy budget status                    |
+| `/pnl`              | Show P&L breakdown by strategy                     |
+| `/metrics [symbol]` | Show detailed performance metrics                  |
 | `/trades [filters]` | Query trade history (e.g., `/trades NVDA winners`) |
-| `/export [type]` | Export to CSV (`trades` or `report`) |
-| `/quit` or `/stop` | Stop the bot gracefully |
+| `/export [type]`    | Export to CSV (`trades` or `report`)               |
+| `/quit` or `/stop`  | Stop the bot gracefully                            |
 
 ## Trading Logic
 

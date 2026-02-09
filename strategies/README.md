@@ -144,6 +144,20 @@ directional pressure for quick momentum trades.
 - `min_confidence`: Minimum confidence (default: 0.70)
 - `zone_proximity_pct`: Proximity as % of price (default: 0.0005 = 0.05%)
 
+### VIXMomentumORB (`vix_momentum_orb`)
+
+15-minute Opening Range Breakout (ORB) strategy filtered by VIX momentum.
+
+**Signals:**
+- `ORB_BREAKOUT_BULLISH` → LONG_CALL (Price > ORB High & VIX down)
+- `ORB_BREAKOUT_BEARISH` → LONG_PUT (Price < ORB Low & VIX up)
+
+**Config parameters:**
+- `orb_minutes`: Duration of opening range (default: 15)
+- `vix_symbol`: Symbol for VIX data (default: VIX)
+- `vix_slope_minutes`: Lookback for VIX trend (default: 5)
+- `check_vix_divergence`: Enable divergence filter (default: True)
+
 ## Strategy Interface
 
 ### Required Methods
