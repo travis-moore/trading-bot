@@ -5,6 +5,7 @@ Automated options trading based on order book liquidity analysis
 """
 
 import yaml
+import os
 import logging
 import time
 import signal
@@ -145,6 +146,40 @@ class SwingTradingBot:
                 self.logger.error("Failed to connect to Interactive Brokers")
                 return False
             
+            # Verify Account Type (Paper vs Live) - Early Safety Check
+            self.ib.ib.sleep(1)  # Wait briefly for account data to sync
+            
+            acct_id = "Unknown"
+            if isinstance(self.ib.ib.managedAccounts, list) and self.ib.ib.managedAccounts:
+                acct_id = self.ib.ib.managedAccounts[0]
+            
+            # Fallback: Try to extract from accountValues if managedAccounts is empty
+            if acct_id == "Unknown":
+                account_values = self.ib.ib.accountValues()
+                if account_values:
+                    acct_id = account_values[0].account
+            
+            is_paper_acct = acct_id.startswith('D')
+            enable_paper = self.config['operation'].get('enable_paper_trading', True)
+            
+            # Strict Account Validation (Env Vars or Config)
+            expected_paper = os.environ.get('IB_PAPER_ACCOUNT') or self.config['ib_connection'].get('paper_account_id')
+            expected_live = os.environ.get('IB_LIVE_ACCOUNT') or self.config['ib_connection'].get('live_account_id')
+            
+            # Safety Check: Enforce Paper Trading Mode if configured
+            if acct_id != "Unknown":
+                if enable_paper:
+                    if expected_paper and acct_id != expected_paper:
+                        self.logger.critical(f"SAFETY STOP: Expected paper account {expected_paper} but connected to {acct_id}!")
+                        return False
+                    if not is_paper_acct:
+                        self.logger.critical(f"SAFETY STOP: Configured for PAPER TRADING but connected to LIVE account {acct_id}!")
+                        return False
+                else:
+                    if expected_live and acct_id != expected_live:
+                        self.logger.critical(f"SAFETY STOP: Expected live account {expected_live} but connected to {acct_id}!")
+                        return False
+
             # Initialize liquidity analyzer
             self.analyzer = LiquidityAnalyzer(self.config['liquidity_analysis'])
             
@@ -1119,9 +1154,22 @@ Available commands:
 
         # Account Status & Value
         account_val = self.ib.get_account_value()
-        acct_id = self.ib.ib.managedAccounts[0] if self.ib.ib.managedAccounts else "Unknown"
+        
+        acct_id = "Unknown"
+        if isinstance(self.ib.ib.managedAccounts, list) and self.ib.ib.managedAccounts:
+            acct_id = self.ib.ib.managedAccounts[0]
+        
+        # Fallback: Try to extract from accountValues if managedAccounts is empty
+        if acct_id == "Unknown":
+            account_values = self.ib.ib.accountValues()
+            if account_values:
+                acct_id = account_values[0].account
+            
         is_paper_acct = acct_id.startswith('D')
-        acct_type = "PAPER TRADING" if is_paper_acct else "LIVE TRADING"
+        if acct_id == "Unknown":
+            acct_type = "UNKNOWN STATUS"
+        else:
+            acct_type = "PAPER TRADING" if is_paper_acct else "LIVE TRADING"
 
         self.logger.info(f"Account: {acct_id} [{acct_type}]")
         if account_val:
