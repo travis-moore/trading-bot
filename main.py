@@ -1116,8 +1116,19 @@ Available commands:
         self.logger.info("=" * 60)
         self.logger.info("SWING TRADING BOT STARTED")
         self.logger.info("=" * 60)
+
+        # Account Status & Value
+        account_val = self.ib.get_account_value()
+        acct_id = self.ib.ib.managedAccounts[0] if self.ib.ib.managedAccounts else "Unknown"
+        is_paper_acct = acct_id.startswith('D')
+        acct_type = "PAPER TRADING" if is_paper_acct else "LIVE TRADING"
+
+        self.logger.info(f"Account: {acct_id} [{acct_type}]")
+        if account_val:
+            self.logger.info(f"Account Value: ${account_val:,.2f}")
+
         self.logger.info(f"Monitoring symbols: {', '.join(self.config['symbols'])}")
-        self.logger.info(f"Paper trading: {self.config['operation']['enable_paper_trading']}")
+        self.logger.info(f"Config Paper Mode: {self.config['operation']['enable_paper_trading']}")
         if self.strategy_manager:
             status = self.strategy_manager.get_status()
             self.logger.info(f"Strategies: {status['enabled']} enabled / {status['loaded']} loaded")
