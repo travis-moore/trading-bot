@@ -4,6 +4,7 @@ Swing Trading Bot - Main Program
 Automated options trading based on order book liquidity analysis
 """
 
+import csv
 import yaml
 import os
 import logging
@@ -84,6 +85,10 @@ class SwingTradingBot:
             'trades_exited': 0,
             'start_time': None
         }
+
+        # Data Collection
+        self.data_log_file = None
+        self.data_writer = None
         
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -272,6 +277,10 @@ class SwingTradingBot:
             self.market_regime.assess_regime()
             self.sector_manager.assess_rotation()
             
+            # Initialize data logger if enabled
+            if self.config['operation'].get('data_collection_mode', False):
+                self._init_data_logger()
+
             self.logger.info("Initialization complete")
             return True
             
@@ -279,6 +288,46 @@ class SwingTradingBot:
             self.logger.error(f"Initialization failed: {e}", exc_info=True)
             return False
     
+    def _init_data_logger(self):
+        """Initialize CSV logger for market data collection."""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"market_data_{timestamp}.csv"
+        try:
+            self.data_log_file = open(filename, 'w', newline='')
+            self.data_writer = csv.writer(self.data_log_file)
+            self.data_writer.writerow([
+                'Timestamp', 'Symbol', 'Price', 'Bid', 'Ask', 'Spread', 
+                'Imbalance', 'Bid_Depth', 'Ask_Depth', 
+                'Nearest_Support', 'Nearest_Resistance'
+            ])
+            self.logger.info(f"Data collection mode enabled. Logging to {filename}")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize data logger: {e}")
+
+    def _log_market_data(self, symbol: str, current_price: float, price_ticker, analysis: Dict):
+        """Log market data snapshot to CSV."""
+        if not self.data_writer:
+            return
+            
+        try:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+            bid = price_ticker.bid if price_ticker and price_ticker.bid else 0
+            ask = price_ticker.ask if price_ticker and price_ticker.ask else 0
+            spread = ask - bid if (ask and bid) else 0
+            
+            nearest = self.analyzer.get_nearest_zones(current_price, analysis)
+            sup_price = nearest['support'].price if nearest['support'] else 0
+            res_price = nearest['resistance'].price if nearest['resistance'] else 0
+
+            self.data_writer.writerow([
+                timestamp, symbol, current_price, bid, ask, spread,
+                analysis.get('imbalance', 0), analysis.get('bid_depth_total', 0), analysis.get('ask_depth_total', 0),
+                sup_price, res_price
+            ])
+            self.data_log_file.flush()
+        except Exception as e:
+            self.logger.error(f"Error logging market data: {e}")
+
     def _initialize_strategy_budgets(self):
         """Initialize budgets for strategies that have them configured."""
         if not self.db or not self.strategy_manager:
@@ -478,16 +527,26 @@ class SwingTradingBot:
                 if not current_price:
                     continue
 
-                # Analyze order book for support/resistance (for logging)
+                # Always analyze book if we need it for logging or trading
+                analysis = None
                 if ticker.domBids and ticker.domAsks:
                     analysis = self.analyzer.analyze_book(ticker)
-                    nearest = self.analyzer.get_nearest_zones(current_price, analysis)
+                elif self.data_writer:
+                    # If logging is on but no depth, get empty analysis so we can still log price/spread
+                    analysis = self.analyzer.analyze_book(ticker)
 
+                # Analyze order book for support/resistance (for logging)
+                if analysis and ticker.domBids and ticker.domAsks:
+                    nearest = self.analyzer.get_nearest_zones(current_price, analysis)
                     support_str = f"${nearest['support'].price:.2f}" if nearest['support'] else "none"
                     resistance_str = f"${nearest['resistance'].price:.2f}" if nearest['resistance'] else "none"
                 else:
                     support_str = "no_depth"
                     resistance_str = "no_depth"
+
+                # Log data if enabled
+                if self.data_writer and analysis:
+                    self._log_market_data(symbol, current_price, price_ticker, analysis)
 
                 # Use strategy manager if available, otherwise fall back to legacy analyzer
                 if self.strategy_manager:
@@ -1256,6 +1315,10 @@ Available commands:
         # Disconnect from IB
         if self.ib:
             self.ib.disconnect()
+
+        # Close data log
+        if self.data_log_file:
+            self.data_log_file.close()
 
         if self.notifier:
             self.notifier.send_message("🛑 **Swing Trading Bot Stopped**")
