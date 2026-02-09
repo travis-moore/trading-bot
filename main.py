@@ -255,21 +255,24 @@ class SwingTradingBot:
 
             # Subscribe to market data for all symbols
             depth_exchange = self.config['ib_connection'].get('market_depth_exchange', 'ISLAND')
+            is_sequential = self.config['ib_connection'].get('sequential_scanning', False)
+            
             for symbol in self.config['symbols']:
                 # Level 2 (Depth)
-                ticker = self.ib.subscribe_market_depth(symbol, exchange=depth_exchange)
-                if ticker:
-                    self.tickers[symbol] = ticker
-                    self.logger.info(f"Subscribed to market depth for {symbol}")
-                else:
-                    self.logger.warning(f"Failed to subscribe to depth for {symbol}")
+                if not is_sequential:
+                    ticker = self.ib.subscribe_market_depth(symbol, exchange=depth_exchange)
+                    if ticker:
+                        self.tickers[symbol] = ticker
+                        self.logger.info(f"Subscribed to market depth for {symbol}")
+                    else:
+                        self.logger.warning(f"Failed to subscribe to depth for {symbol}")
                 
                 # Level 1 (Price)
                 price_ticker = self.ib.subscribe_market_data(symbol)
                 if price_ticker:
                     self.price_tickers[symbol] = price_ticker
             
-            if not self.tickers:
+            if not self.tickers and not is_sequential:
                 self.logger.error("No market depth subscriptions active")
                 return False
             
@@ -519,7 +522,22 @@ class SwingTradingBot:
                         if self.notifier:
                             self.notifier.send_message(f"⚠️ {msg}")
 
-        for symbol, ticker in self.tickers.items():
+        # Determine symbols to scan (Sequential vs Parallel)
+        is_sequential = self.config['ib_connection'].get('sequential_scanning', False)
+        symbols_to_scan = self.config['symbols'] if is_sequential else list(self.tickers.keys())
+
+        for symbol in symbols_to_scan:
+            ticker = None
+            
+            # Handle Sequential Scanning (Subscribe -> Analyze -> Unsubscribe)
+            if is_sequential:
+                depth_exchange = self.config['ib_connection'].get('market_depth_exchange', 'ISLAND')
+                # quiet=True to avoid log spam
+                ticker = self.ib.subscribe_market_depth(symbol, exchange=depth_exchange, quiet=True)
+                # Note: subscribe_market_depth already sleeps 2s to allow data to populate
+            else:
+                ticker = self.tickers.get(symbol)
+
             try:
                 # Get current price
                 price_ticker = self.price_tickers.get(symbol)
@@ -630,6 +648,10 @@ class SwingTradingBot:
 
             except Exception as e:
                 self.logger.error(f"Error scanning {symbol}: {e}", exc_info=True)
+            finally:
+                # Clean up subscription if in sequential mode
+                if is_sequential and ticker:
+                    self.ib.cancel_market_depth(ticker.contract)
     
     def _check_daily_loss_limit(self) -> bool:
         """Check if daily loss limit has been reached. Returns True if trading should stop."""

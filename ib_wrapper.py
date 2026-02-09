@@ -513,7 +513,7 @@ class IBWrapper:
             return []
     
     def subscribe_market_depth(self, symbol: str, num_rows: int = 50,
-                               exchange: str = 'ISLAND') -> Optional[Ticker]:
+                               exchange: str = 'ISLAND', quiet: bool = False) -> Optional[Ticker]:
         """
         Subscribe to market depth data
 
@@ -521,6 +521,7 @@ class IBWrapper:
             symbol: Stock symbol
             num_rows: Number of depth levels
             exchange: Exchange for depth data (e.g. 'ISLAND', 'ARCA', 'NYSE')
+            quiet: If True, suppress info logging (useful for sequential scanning)
 
         Returns:
             Ticker object with depth data
@@ -531,7 +532,8 @@ class IBWrapper:
             is_smart = (exchange.upper() == 'SMART')
             ticker = self.ib.reqMktDepth(contract, numRows=num_rows, isSmartDepth=is_smart)
             self.ib.sleep(2)
-            logger.info(f"Subscribed to market depth for {symbol}")
+            if not quiet:
+                logger.info(f"Subscribed to market depth for {symbol}")
             return ticker
         except Exception as e:
             logger.error(f"Error subscribing to market depth: {e}")

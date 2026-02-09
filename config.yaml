@@ -5,6 +5,7 @@ ib_connection:
   host: "127.0.0.1"
   port: 7497  # TWS live=7497, paper=7497, Gateway live=7497, paper=4002
   client_id: 1
+  sequential_scanning: true  # Set to true if hitting market data limits (e.g. only 3 symbols working)
 
 # Trading symbols to monitor
 # symbols:
