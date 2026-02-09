@@ -43,6 +43,46 @@ except ImportError:
     StrategyManager = None
 
 
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter for colored console output"""
+    
+    # ANSI colors
+    GREY = "\x1b[38;21m"
+    GREEN = "\x1b[32;21m"
+    YELLOW = "\x1b[33;21m"
+    RED = "\x1b[31;21m"
+    BOLD_RED = "\x1b[31;1m"
+    RESET = "\x1b[0m"
+    CYAN = "\x1b[36;21m"
+    
+    def __init__(self, fmt=None, datefmt=None):
+        super().__init__(fmt, datefmt)
+        self.fmt = fmt or '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        self.FORMATS = {
+            logging.DEBUG: self.GREY + self.fmt + self.RESET,
+            logging.INFO: self.RESET + self.fmt + self.RESET,
+            logging.WARNING: self.YELLOW + self.fmt + self.RESET,
+            logging.ERROR: self.RED + self.fmt + self.RESET,
+            logging.CRITICAL: self.BOLD_RED + self.fmt + self.RESET
+        }
+
+    def format(self, record):
+        log_fmt = self.FORMATS.get(record.levelno)
+        
+        # Custom coloring for specific messages
+        if record.levelno == logging.INFO:
+            msg = record.getMessage().lower()
+            # Signals and Trade Entries -> Green
+            if "confidence:" in msg or "trade entered" in msg or "attempting to enter" in msg:
+                log_fmt = self.GREEN + self.fmt + self.RESET
+            # Bot Status / Account Info -> Cyan
+            elif "account value:" in msg or "bot status" in msg or "uptime:" in msg:
+                log_fmt = self.CYAN + self.fmt + self.RESET
+        
+        formatter = logging.Formatter(log_fmt, datefmt=self.datefmt)
+        return formatter.format(record)
+
+
 class SwingTradingBot:
     """
     Main trading bot coordinator
@@ -112,7 +152,7 @@ class SwingTradingBot:
         # Console handler - filters out noisy ib_insync messages
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(getattr(logging, log_level))
-        console_handler.setFormatter(logging.Formatter(log_format))
+        console_handler.setFormatter(ColoredFormatter(log_format))
 
         # Filter to exclude ib_insync verbose messages from console
         class IbInsyncFilter(logging.Filter):
@@ -1356,6 +1396,10 @@ Available commands:
 
 def main():
     """Entry point"""
+    # Enable ANSI colors on Windows
+    if sys.platform == 'win32':
+        os.system('')
+        
     print("""
     ╔═══════════════════════════════════════════════════════════╗
     ║         SWING TRADING BOT - Options Trading System        ║
