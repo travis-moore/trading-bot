@@ -35,6 +35,7 @@ class VIXMomentumORB(BaseStrategy):
         self._orb_high: Dict[str, float] = {}
         self._orb_low: Dict[str, float] = {}
         self._orb_complete: Dict[str, bool] = {}
+        self._orb_milestones_logged: Dict[str, set] = {}
         
         # VIX History: List[Tuple[datetime, float]]
         self._vix_history: List[Tuple[datetime, float]] = []
@@ -77,6 +78,26 @@ class VIXMomentumORB(BaseStrategy):
         if not last or (now - last).total_seconds() > interval_seconds:
             logger.log(level, message)
             self._last_log_time[symbol] = now
+            
+    def _get_next_orb_end_info(self, now: datetime, orb_minutes: int) -> Tuple[timedelta, str]:
+        """Calculate time until next ORB end and description of when it is."""
+        today = now.date()
+        market_open_today = datetime.combine(today, time(9, 30), tzinfo=now.tzinfo)
+        orb_end_today = market_open_today + timedelta(minutes=orb_minutes)
+        
+        if now < orb_end_today:
+            return orb_end_today - now, "today"
+            
+        # Find next business day
+        next_day = today + timedelta(days=1)
+        while next_day.weekday() >= 5:  # Saturday=5, Sunday=6
+            next_day += timedelta(days=1)
+            
+        market_open_next = datetime.combine(next_day, time(9, 30), tzinfo=now.tzinfo)
+        orb_end_next = market_open_next + timedelta(minutes=orb_minutes)
+        
+        day_name = next_day.strftime("%A")
+        return orb_end_next - now, day_name
 
     def analyze(self, ticker: Any, current_price: float,
                 context: Dict[str, Any] = None) -> Optional[StrategySignal]:
@@ -104,13 +125,19 @@ class VIXMomentumORB(BaseStrategy):
             self._orb_complete[symbol] = False
             self._trade_executed_today[symbol] = False
             
+        orb_minutes = self.get_config('orb_minutes', 15)
+            
         # 2. One-and-Done Filter
         if self._trade_executed_today[symbol]:
+            # Show countdown if we are done for the day (traded or missed)
+            remaining, day_str = self._get_next_orb_end_info(now, orb_minutes)
+            hours, remainder = divmod(remaining.total_seconds(), 3600)
+            minutes, _ = divmod(remainder, 60)
+            self._log_throttled(symbol, f"[{self.name}] Waiting for next session. ORB ends in {int(hours)}h {int(minutes)}m ({day_str})", level=logging.INFO)
             return None
 
         # 3. Define Time Windows
         market_open = datetime.combine(today, time(9, 30), tzinfo=now.tzinfo)
-        orb_minutes = self.get_config('orb_minutes', 15)
         orb_end = market_open + timedelta(minutes=orb_minutes)
         trading_end = market_open + timedelta(minutes=45) # 10:15 AM
 
@@ -123,22 +150,49 @@ class VIXMomentumORB(BaseStrategy):
             self._orb_high[symbol] = max(self._orb_high[symbol], current_price)
             self._orb_low[symbol] = min(self._orb_low[symbol], current_price)
             self._orb_complete[symbol] = False
+            
+            # Countdown Logging (15, 10, 5 min warnings)
+            if symbol not in self._orb_milestones_logged:
+                self._orb_milestones_logged[symbol] = set()
+            
+            minutes_remaining = (orb_end - now).total_seconds() / 60.0
+            for m in [15, 10, 5]:
+                if minutes_remaining <= m and m not in self._orb_milestones_logged[symbol]:
+                    if minutes_remaining > m - 1.0: # Only log if we are actually close to the mark
+                        logger.info(f"[{self.name}] {symbol}: {m} min to end of ORB. Range: {self._orb_low[symbol]:.2f} - {self._orb_high[symbol]:.2f}")
+                    self._orb_milestones_logged[symbol].add(m)
+            
             self._log_throttled(symbol, f"[{self.name}] Building ORB: {self._orb_low[symbol]:.2f} - {self._orb_high[symbol]:.2f}", level=logging.DEBUG)
             return None
         elif now >= orb_end:
             if not self._orb_complete[symbol]:
+                # If ORB window is over but high/low are uninitialized, it means we missed the window.
+                if self._orb_high[symbol] == float('-inf') or self._orb_low[symbol] == float('inf'):
+                    # Missed window - disable for today and show countdown
+                    self._trade_executed_today[symbol] = True
+                    self._orb_complete[symbol] = True
+                    
+                    remaining, day_str = self._get_next_orb_end_info(now, orb_minutes)
+                    hours, remainder = divmod(remaining.total_seconds(), 3600)
+                    minutes, _ = divmod(remainder, 60)
+                    self._log_throttled(symbol, f"[{self.name}] Waiting for next session. ORB ends in {int(hours)}h {int(minutes)}m ({day_str})", level=logging.INFO)
+                    return None
                 logger.info(f"[{self.name}] {symbol}: ORB Established: {self._orb_low[symbol]:.2f} - {self._orb_high[symbol]:.2f}")
             self._orb_complete[symbol] = True
         else:
             # Before market open
-            time_until_open = market_open - now
-            hours, remainder = divmod(time_until_open.total_seconds(), 3600)
+            remaining, day_str = self._get_next_orb_end_info(now, orb_minutes)
+            hours, remainder = divmod(remaining.total_seconds(), 3600)
             minutes, _ = divmod(remainder, 60)
-            self._log_throttled(symbol, f"[{self.name}] Market opens in {int(hours)}h {int(minutes)}m", level=logging.INFO)
+            self._log_throttled(symbol, f"[{self.name}] Waiting for market open. ORB ends in {int(hours)}h {int(minutes)}m ({day_str})", level=logging.INFO)
             return None
 
         # 5. Trading Window Check (9:45 - 10:15)
         if not (orb_end <= now <= trading_end):
+            remaining, day_str = self._get_next_orb_end_info(now, orb_minutes)
+            hours, remainder = divmod(remaining.total_seconds(), 3600)
+            minutes, _ = divmod(remainder, 60)
+            self._log_throttled(symbol, f"[{self.name}] Trading window closed. Next ORB ends in {int(hours)}h {int(minutes)}m ({day_str})", level=logging.INFO)
             return None
 
         # 6. Spread Check (Improvement B)
@@ -227,6 +281,7 @@ class VIXMomentumORB(BaseStrategy):
         self._orb_low.clear()
         self._orb_complete.clear()
         self._vix_history.clear()
+        self._orb_milestones_logged.clear()
 
     def _get_market_price(self, symbol: str) -> Optional[float]:
         """Helper to get price from IB wrapper."""
