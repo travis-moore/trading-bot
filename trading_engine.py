@@ -409,14 +409,17 @@ class TradingEngine:
         expiry = expiries[0]
         
         # Determine strike and right
-        if direction == TradeDirection.LONG_CALL:
+        # Fix: Compare by value to handle Enums from different modules (strategies vs engine)
+        dir_value = direction.value if hasattr(direction, 'value') else str(direction)
+        
+        if dir_value == TradeDirection.LONG_CALL.value:
             strike_pct = self.config.get('call_strike_pct', 1.02)
             right = 'C'
-        elif direction == TradeDirection.LONG_PUT:
+        elif dir_value == TradeDirection.LONG_PUT.value:
             strike_pct = self.config.get('put_strike_pct', 0.98)
             right = 'P'
         else:
-            logger.error(f"Invalid trade direction for option selection: {direction}")
+            logger.error(f"Invalid trade direction for option selection: {direction} (value: {dir_value})")
             return None
         
         target_strike = current_price * strike_pct
@@ -525,7 +528,8 @@ class TradingEngine:
         # Get option price
         price_data = self.ib.get_option_price(contract)
         if price_data is None:
-            logger.error(f"[{strategy_label}] Could not get option price for {contract.localSymbol}")
+            logger.error(f"[{strategy_label}] Could not get option price for {contract.localSymbol} "
+                         f"(Strike: {contract.strike}, Expiry: {contract.lastTradeDateOrContractMonth})")
             return False
 
         bid, ask, last = price_data
