@@ -58,7 +58,7 @@ operation:
   market_data_refresh: 5         # Seconds between depth data updates
   enable_paper_trading: true     # Use paper trading account
   log_level: "INFO"              # DEBUG, INFO, WARNING, ERROR
-  data_collection_mode: false    # Log detailed market data to CSV for debugging
+  data_collection_mode: true    # Log detailed market data to CSV for debugging
 
 # Notifications
 notifications:
@@ -91,7 +91,7 @@ strategies:
     type: swing_trading
     enabled: true
     budget: 2000                    # Max budget for this strategy ($)
-    symbols: ["NVDA", "AAPL", "TSLA"] # Monitor these symbols
+    symbols: ["NVDA", "AAPL", "TSLA", "QQQ", "XSP"] # Monitor these symbols
     max_positions: 2                # Max concurrent positions
     level_confirmation_minutes: 1   # Reduced from 5m to 1m for faster detection
     exclusion_zone_pct: 0.001       # Reduced from 0.5% to 0.1% to see closer levels
@@ -125,7 +125,7 @@ strategies:
     type: swing_trading
     enabled: true
     budget: 1500                    # Smaller budget for aggressive strategy
-    symbols: ["NVDA", "TSLA"]       # Only trade these volatile stocks
+    symbols: ["NVDA", "TSLA", "QQQ", "XSP"]       # Only trade these volatile stocks
     daily_loss_limit: 200.0         # Stop this strategy if it loses $200 today
     max_positions: 2                # Max concurrent positions
     level_confirmation_minutes: 1   # Faster confirmation
@@ -155,7 +155,7 @@ strategies:
   scalp_quick:
     type: scalping
     enabled: true
-    symbols: ["NVDA", "TSLA"]       # High volatility symbols for scalping
+    symbols: ["NVDA", "TSLA", "QQQ", "XSP"]       # High volatility symbols for scalping
     budget: 1000                    # Tighter budget for quick scalps
     daily_loss_limit: 150.0         # Stop scalping if down $150
     max_positions: 1                # Scalping = one position at a time
@@ -171,7 +171,7 @@ strategies:
   scalp_patient:
     type: scalping
     enabled: true
-    symbols: ["NVDA", "AAPL"]       # Slightly more stable symbols
+    symbols: ["NVDA", "AAPL", "QQQ", "XSP"]       # Slightly more stable symbols
     budget: 1500
     max_positions: 1                # Scalping = one position at a time
     imbalance_entry_threshold: 0.8  # Higher threshold
@@ -199,7 +199,7 @@ strategies:
   bull_put_spread_1:
     type: bull_put_spread
     enabled: true
-    symbols: ["AAPL", "NVDA"]
+    symbols: ["AAPL", "NVDA", "QQQ", "XSP"]
     budget: 2000
     max_positions: 2
     zone_proximity_pct: 0.005
@@ -209,7 +209,7 @@ strategies:
   bear_put_spread_1:
     type: bear_put_spread
     enabled: true
-    symbols: ["TSLA", "NVDA"]
+    symbols: ["TSLA", "NVDA", "QQQ", "XSP"]
     budget: 2000
     max_positions: 2
     zone_proximity_pct: 0.005
@@ -219,7 +219,7 @@ strategies:
   long_put_1:
     type: long_put
     enabled: true
-    symbols: ["TSLA"]
+    symbols: ["TSLA", "QQQ", "XSP"]
     budget: 1500
     max_positions: 2
     zone_proximity_pct: 0.005
@@ -229,7 +229,7 @@ strategies:
   iron_condor_1:
     type: iron_condor
     enabled: true
-    symbols: ["AAPL", "MSFT"]       # Stable stocks for Range Bound strategies
+    symbols: ["AAPL", "MSFT", "QQQ", "XSP"]       # Stable stocks for Range Bound strategies
     budget: 2500
     max_positions: 2
     zone_proximity_pct: 0.005

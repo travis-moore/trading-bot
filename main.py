@@ -533,7 +533,13 @@ class SwingTradingBot:
                     analysis = self.analyzer.analyze_book(ticker)
                 elif self.data_writer:
                     # If logging is on but no depth, get empty analysis so we can still log price/spread
-                    analysis = self.analyzer.analyze_book(ticker)
+                    analysis = {
+                        'support': [],
+                        'resistance': [],
+                        'bid_depth_total': 0,
+                        'ask_depth_total': 0,
+                        'imbalance': 0
+                    }
 
                 # Analyze order book for support/resistance (for logging)
                 if analysis and ticker.domBids and ticker.domAsks:
