@@ -47,13 +47,13 @@ class ColoredFormatter(logging.Formatter):
     """Custom formatter for colored console output"""
     
     # ANSI colors
-    GREY = "\x1b[38;21m"
-    GREEN = "\x1b[32;21m"
-    YELLOW = "\x1b[33;21m"
-    RED = "\x1b[31;21m"
+    GREY = "\x1b[90m"
+    GREEN = "\x1b[32m"
+    YELLOW = "\x1b[33m"
+    RED = "\x1b[31m"
     BOLD_RED = "\x1b[31;1m"
     RESET = "\x1b[0m"
-    CYAN = "\x1b[36;21m"
+    CYAN = "\x1b[36m"
     
     def __init__(self, fmt=None, datefmt=None):
         super().__init__(fmt, datefmt)
