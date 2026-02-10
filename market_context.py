@@ -43,7 +43,14 @@ class MarketRegimeDetector:
         try:
             # Fetch Data
             spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y')
+            if not spy_bars:
+                # Fallback to MIDPOINT if TRADES fails (common with shared market data/paper trading)
+                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y', what_to_show='MIDPOINT')
+
             vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND')
+            if not vix_bars:
+                # Fallback for VIX as well
+                vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND', what_to_show='MIDPOINT')
             
             if not spy_bars or not vix_bars:
                 logger.warning("Insufficient data for regime detection")
