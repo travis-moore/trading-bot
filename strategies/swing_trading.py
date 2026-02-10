@@ -298,6 +298,9 @@ class SwingTradingStrategy(BaseStrategy):
             return None
             
         now = ticker.time if ticker.time else datetime.now()
+        # FIX: Ensure now is timezone-aware to prevent offset-naive/aware subtraction errors
+        if now.tzinfo is None:
+            now = now.astimezone()
 
         # Initialize tracking for this symbol
         if symbol not in self._tracked_levels:
@@ -544,6 +547,10 @@ class SwingTradingStrategy(BaseStrategy):
         tracked = self._tracked_levels[symbol]
         confirmation_time = timedelta(minutes=self.get_config('level_confirmation_minutes', 5, symbol=symbol))
 
+        # Ensure 'now' is timezone-aware
+        if now.tzinfo is None:
+            now = now.astimezone()
+
         # Track all significant zones from current analysis
         all_zones = analysis['support'] + analysis['resistance']
         current_prices = {z.price for z in all_zones}
@@ -588,13 +595,22 @@ class SwingTradingStrategy(BaseStrategy):
 
                 # Check for confirmation
                 if level.state == LevelState.PENDING:
-                    if now - level.first_seen >= confirmation_time:
+                    # FIX: Normalize timestamps for comparison
+                    first_seen = level.first_seen
+                    if first_seen.tzinfo is None:
+                        first_seen = first_seen.astimezone()
+
+                    if now - first_seen >= confirmation_time:
                         level.state = LevelState.CONFIRMED
                         logger.debug(f"Level confirmed: ${price:.2f} ({level.zone_type})")
 
             else:
                 # Level disappeared
-                age = now - level.last_seen
+                last_seen = level.last_seen
+                if last_seen.tzinfo is None:
+                    last_seen = last_seen.astimezone()
+
+                age = now - last_seen
                 if age > timedelta(seconds=30):
                     # Level gone for 30+ seconds - could be spoofing or broken
                     if level.state == LevelState.CONFIRMED:
@@ -1001,10 +1017,14 @@ class SwingTradingStrategy(BaseStrategy):
 
         cache_ttl = self.get_config('historical_cache_ttl_hours', 24)
         now = datetime.now()
+        now = datetime.now().astimezone()
 
         # Check if we need to refresh
         last_update = self._historical_last_update.get(symbol)
         if last_update:
+            # FIX: Ensure last_update is aware
+            if last_update.tzinfo is None:
+                last_update = last_update.astimezone()
             age_hours = (now - last_update).total_seconds() / 3600
             if age_hours < cache_ttl:
                 return  # Cache is still fresh
