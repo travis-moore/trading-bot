@@ -997,7 +997,11 @@ class TradingEngine:
                         return True, f"Trailing stop hit (${current_price:.2f} >= ${effective_stop:.2f}, peak: ${position.peak_price:.2f})"
         
         # Check time-based exit
-        days_held = (datetime.now() - position.entry_time).days
+        now = datetime.now()
+        if position.entry_time.tzinfo is not None:
+            now = now.astimezone()
+
+        days_held = (now - position.entry_time).days
         if days_held >= self.max_hold_days:
             return True, f"Max hold period reached ({days_held} days)"
         
