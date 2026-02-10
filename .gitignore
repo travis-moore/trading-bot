@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 *.so
 .Python
+*.csv
+*.log
 
 # Virtual environments
 venv/
@@ -28,3 +30,5 @@ trading_bot.db
 trading_bot.log
 config_bk_2026-02-04.yaml
 .claude/settings.local.json
+trading_bot.db-shm
+trading_bot.db-wal
