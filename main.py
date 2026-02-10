@@ -490,10 +490,15 @@ class SwingTradingBot:
                 # Get strategy (default to swing_trading for older records)
                 strategy = row['strategy'] if 'strategy' in row.keys() else 'swing_trading'
 
+                # Ensure entry_time is timezone-aware to prevent strategy errors
+                entry_time = datetime.fromisoformat(row['entry_time'])
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.astimezone()
+
                 position = Position(
                     contract=contract,
                     entry_price=row['entry_price'],
-                    entry_time=datetime.fromisoformat(row['entry_time']),
+                    entry_time=entry_time,
                     quantity=actual_qty,
                     direction=TradeDirection(row['direction']),
                     stop_loss=row['stop_loss'],
@@ -633,6 +638,11 @@ class SwingTradingBot:
 
                 # Use strategy manager if available, otherwise fall back to legacy analyzer
                 if self.strategy_manager:
+                    # FIX: Ensure position timestamps are timezone-aware to prevent strategy errors
+                    for pos in self.engine.positions:
+                        if hasattr(pos, 'entry_time') and isinstance(pos.entry_time, datetime) and pos.entry_time.tzinfo is None:
+                            pos.entry_time = pos.entry_time.astimezone()
+
                     # Get signals from all enabled strategy instances
                     context = {
                         'symbol': symbol,
