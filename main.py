@@ -495,6 +495,22 @@ class SwingTradingBot:
                 if entry_time.tzinfo is None:
                     entry_time = entry_time.astimezone()
 
+                # Handle legacy/invalid pattern names from DB
+                try:
+                    pattern = Pattern(row['pattern'])
+                except ValueError:
+                    self.logger.warning(
+                        f"  Invalid pattern '{row['pattern']}' for position {row['id']}. "
+                        f"Mapping to new pattern."
+                    )
+                    # Map old patterns to new ones
+                    if 'imbalance_short' in row['pattern']:
+                        pattern = Pattern.POTENTIAL_BREAKOUT_DOWN
+                    elif 'imbalance_long' in row['pattern']:
+                        pattern = Pattern.POTENTIAL_BREAKOUT_UP
+                    else:
+                        pattern = Pattern.CONSOLIDATION
+
                 position = Position(
                     contract=contract,
                     entry_price=row['entry_price'],
@@ -503,7 +519,7 @@ class SwingTradingBot:
                     direction=TradeDirection(row['direction']),
                     stop_loss=row['stop_loss'],
                     profit_target=row['profit_target'],
-                    pattern=Pattern(row['pattern']),
+                    pattern=pattern,
                     db_id=row['id'],
                     order_ref=row['order_ref'],
                     strategy_name=strategy,
