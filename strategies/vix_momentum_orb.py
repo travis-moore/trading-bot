@@ -28,6 +28,7 @@ class VIXMomentumORB(BaseStrategy):
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         super().__init__(config)
         self._ib_wrapper = None
+        self._vix_ticker = None
         
         # State
         self._trade_executed_today: Dict[str, bool] = {}
@@ -70,6 +71,10 @@ class VIXMomentumORB(BaseStrategy):
     def set_ib_wrapper(self, wrapper: Any):
         """Set IB wrapper to access data for other symbols (VIX, SPY)."""
         self._ib_wrapper = wrapper
+        # Subscribe to VIX data immediately
+        vix_symbol = self.get_config('vix_symbol', 'VIX')
+        if self._ib_wrapper:
+            self._vix_ticker = self._ib_wrapper.subscribe_market_data(vix_symbol)
 
     def _log_throttled(self, symbol: str, message: str, level=logging.INFO, interval_seconds=60):
         """Log a message at most once every interval_seconds."""
@@ -285,6 +290,13 @@ class VIXMomentumORB(BaseStrategy):
 
     def _get_market_price(self, symbol: str) -> Optional[float]:
         """Helper to get price from IB wrapper."""
+        # Check cached VIX ticker first
+        if symbol == self.get_config('vix_symbol', 'VIX') and self._vix_ticker:
+            t = self._vix_ticker
+            if t.last and t.last > 0: return t.last
+            if t.bid > 0 and t.ask > 0: return (t.bid + t.ask) / 2
+            if t.close > 0: return t.close
+
         if not self._ib_wrapper:
             return None
         
