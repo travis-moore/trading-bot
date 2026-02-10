@@ -46,11 +46,17 @@ class MarketRegimeDetector:
             if not spy_bars:
                 # Fallback to MIDPOINT if TRADES fails (common with shared market data/paper trading)
                 spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y', what_to_show='MIDPOINT')
+            if not spy_bars:
+                # Fallback to BID
+                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y', what_to_show='BID')
 
             vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND')
             if not vix_bars:
                 # Fallback for VIX as well
                 vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND', what_to_show='MIDPOINT')
+            if not vix_bars:
+                # Fallback to BID
+                vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND', what_to_show='BID')
             
             if not spy_bars or not vix_bars:
                 logger.warning("Insufficient data for regime detection")
@@ -166,12 +172,20 @@ class SectorRotationManager:
             # Get SPY data
             spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D')
             if not spy_bars:
+                # Fallback to MIDPOINT
+                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D', what_to_show='MIDPOINT')
+            
+            if not spy_bars:
                 return
             
             spy_closes = {b.date: b.close for b in spy_bars} # Map by date/time for alignment
             
             for sector in self.SECTORS:
                 sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D')
+                if not sec_bars:
+                    # Fallback to MIDPOINT
+                    sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D', what_to_show='MIDPOINT')
+                
                 if not sec_bars:
                     continue
                 
