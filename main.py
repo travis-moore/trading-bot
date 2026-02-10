@@ -499,17 +499,8 @@ class SwingTradingBot:
                 try:
                     pattern = Pattern(row['pattern'])
                 except ValueError:
-                    self.logger.warning(
-                        f"  Invalid pattern '{row['pattern']}' for position {row['id']}. "
-                        f"Mapping to new pattern."
-                    )
-                    # Map old patterns to new ones
-                    if 'imbalance_short' in row['pattern']:
-                        pattern = Pattern.POTENTIAL_BREAKOUT_DOWN
-                    elif 'imbalance_long' in row['pattern']:
-                        pattern = Pattern.POTENTIAL_BREAKOUT_UP
-                    else:
-                        pattern = Pattern.CONSOLIDATION
+                    # Pattern is not in the legacy Enum (likely a strategy-specific string)
+                    pattern = row['pattern']
 
                 position = Position(
                     contract=contract,
