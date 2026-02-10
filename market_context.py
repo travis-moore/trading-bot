@@ -44,28 +44,22 @@ class MarketRegimeDetector:
             # Fetch Data
             spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y')
             if not spy_bars:
+                # Fallback to RTH=False (Extended hours)
+                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y', use_rth=False)
+            if not spy_bars:
                 # Fallback to MIDPOINT if TRADES fails (common with shared market data/paper trading)
                 spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y', what_to_show='MIDPOINT')
-            if not spy_bars:
-                # Fallback to BID
-                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y', what_to_show='BID')
-            if not spy_bars:
-                # Fallback to ASK
-                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y', what_to_show='ASK')
             if not spy_bars:
                 # Fallback to ISLAND exchange (often works when SMART fails in dual-session)
                 spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 day', duration='1 Y', exchange='ISLAND')
 
             vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND')
             if not vix_bars:
+                # Fallback to RTH=False
+                vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND', use_rth=False)
+            if not vix_bars:
                 # Fallback for VIX as well
                 vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND', what_to_show='MIDPOINT')
-            if not vix_bars:
-                # Fallback to BID
-                vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND', what_to_show='BID')
-            if not vix_bars:
-                # Fallback to ASK
-                vix_bars = self.ib.get_historical_bars('VIX', bar_size='1 day', duration='30 D', exchange='CBOE', sec_type='IND', what_to_show='ASK')
             
             if not spy_bars or not vix_bars:
                 logger.warning("Insufficient data for regime detection")
@@ -181,14 +175,11 @@ class SectorRotationManager:
             # Get SPY data
             spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D')
             if not spy_bars:
+                # Fallback to RTH=False
+                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D', use_rth=False)
+            if not spy_bars:
                 # Fallback to MIDPOINT
                 spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D', what_to_show='MIDPOINT')
-            if not spy_bars:
-                # Fallback to BID
-                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D', what_to_show='BID')
-            if not spy_bars:
-                # Fallback to ASK
-                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D', what_to_show='ASK')
             
             if not spy_bars:
                 return
@@ -198,14 +189,11 @@ class SectorRotationManager:
             for sector in self.SECTORS:
                 sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D')
                 if not sec_bars:
+                    # Fallback to RTH=False
+                    sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D', use_rth=False)
+                if not sec_bars:
                     # Fallback to MIDPOINT
                     sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D', what_to_show='MIDPOINT')
-                if not sec_bars:
-                    # Fallback to BID
-                    sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D', what_to_show='BID')
-                if not sec_bars:
-                    # Fallback to ASK
-                    sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D', what_to_show='ASK')
                 
                 if not sec_bars:
                     continue
