@@ -188,6 +188,7 @@ strategies:
   vix_orb_1:
     type: vix_momentum_orb
     enabled: true
+    one_trade_per_day: true         # Special rule: only one trade per symbol per day
     symbols: ["XSP", "QQQ"]
     budget: 2000
     orb_minutes: 15

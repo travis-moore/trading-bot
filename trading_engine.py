@@ -513,6 +513,17 @@ class TradingEngine:
                 logger.info(f"[{strategy_label}] Already have pending order in {symbol}, skipping")
                 return False
 
+        # Check for "one trade per day" rule if applicable
+        if self.using_strategies and self.db:
+            strategy = self.strategy_manager.get_strategy(strategy_name)
+            if strategy and strategy.get_config('one_trade_per_day', False):
+                if self.db.has_traded_symbol_today(symbol, strategy_name):
+                    logger.info(
+                        f"[{strategy_label}] 'one_trade_per_day' rule: "
+                        f"already traded {symbol} today. Skipping."
+                    )
+                    return False
+
         # Get current price
         current_price = self.ib.get_stock_price(symbol)
         if current_price is None:
@@ -860,11 +871,60 @@ class TradingEngine:
 
         logger.info(f"[{strategy_label}] Removed pending order: {pending.contract.localSymbol} ({reason})")
 
+    def _check_bracket_order_fills(self):
+        """Check if any attached bracket orders (TP/SL) have filled."""
+        for position in self.positions[:]:  # Iterate a copy
+            tp_trade = position.take_profit_trade
+            sl_trade = position.stop_loss_trade
+
+            # Check Take Profit
+            if tp_trade and self.ib.is_order_filled(tp_trade):
+                status = self.ib.get_order_status(tp_trade)
+                fill_price = status.get('avg_fill_price')
+                if not fill_price or fill_price <= 0:
+                    fill_price = position.profit_target  # Fallback
+
+                self._process_successful_exit(position, fill_price, 'take_profit_filled', tp_trade.order.orderId)
+                continue  # Position removed, move to next
+
+            # Check Stop Loss
+            if sl_trade and self.ib.is_order_filled(sl_trade):
+                status = self.ib.get_order_status(sl_trade)
+                fill_price = status.get('avg_fill_price')
+                if not fill_price or fill_price <= 0:
+                    fill_price = position.stop_loss  # Fallback
+
+                self._process_successful_exit(position, fill_price, 'stop_loss_filled', sl_trade.order.orderId)
+                continue  # Position removed, move to next
+
+    def _process_successful_exit(self, position: Position, exit_price: float, reason: str, exit_order_id: Optional[int]):
+        """Process a position that has been successfully exited by a bracket order."""
+        strategy_name = position.strategy_name or 'unknown'
+        strategy_label = self._get_strategy_label(strategy_name)
+        logger.info(f"[{strategy_label}] Position exited: {position.contract.localSymbol} at ${exit_price:.2f}. Reason: {reason}")
+
+        # Persist to trade history
+        if self.db and position.db_id:
+            self.db.close_position(
+                position_id=position.db_id,
+                exit_price=exit_price,
+                exit_reason=reason,
+                exit_order_id=exit_order_id,
+            )
+
+        # Remove from in-memory positions
+        if position in self.positions:
+            self.positions.remove(position)
+
     def check_exits(self):
         """Check all positions for exit conditions"""
-        # First, detect positions removed externally (manual sell)
+        # 1. Check for fills on our own bracket orders (TP/SL). This is the most common exit.
+        self._check_bracket_order_fills()
+
+        # 2. Detect positions that disappeared for other reasons (manual sell, expiration).
         self._check_manual_closes()
 
+        # 3. Check for exits that require placing a new order (e.g., trailing stops).
         for position in self.positions[:]:  # Copy list to allow removal
             should_exit, reason = self._should_exit_position(position)
 

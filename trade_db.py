@@ -391,6 +391,35 @@ class TradeDatabase:
             refs.add(row['order_ref'])
         return refs
 
+    def has_traded_symbol_today(self, symbol: str, strategy_name: str) -> bool:
+        """
+        Check if a strategy has already initiated a trade for a symbol today.
+        Checks both pending positions and trade history.
+        """
+        today = datetime.now().date().isoformat()
+
+        # Check trade_history for closed trades initiated today
+        # Using entry_time to correctly identify when the trade was started
+        cursor = self.conn.execute("""
+            SELECT 1 FROM trade_history
+            WHERE symbol = ? AND strategy = ? AND DATE(entry_time) = ?
+            LIMIT 1
+        """, (symbol, strategy_name, today))
+        if cursor.fetchone():
+            return True
+
+        # Check positions table for open/pending trades initiated today
+        # Using created_at as it reflects when the DB record was made
+        cursor = self.conn.execute("""
+            SELECT 1 FROM positions
+            WHERE symbol = ? AND strategy = ? AND DATE(created_at) = ?
+            LIMIT 1
+        """, (symbol, strategy_name, today))
+        if cursor.fetchone():
+            return True
+
+        return False
+
     # =========================================================================
     # Strategy Budget Management
     # =========================================================================
