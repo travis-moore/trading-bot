@@ -257,7 +257,19 @@ class TradeDatabase:
 
         # Calculate entry cost and exit value (options = price * quantity * 100)
         entry_cost = row['entry_price'] * row['quantity'] * 100
-        exit_value = exit_price * row['quantity'] * 100 if exit_price and exit_price > 0 else 0
+        
+        # Handle failed/cancelled orders that never filled - no P&L impact
+        no_fill_reasons = (
+            'order_failed', 'order_cancelled', 'order_rejected', 
+            'order_timeout_drift', 'order_timeout_no_price', 'order_no_fills'
+        )
+        
+        if exit_reason in no_fill_reasons:
+            exit_value = entry_cost  # Return committed capital fully
+            if not exit_price:
+                exit_price = row['entry_price']  # Record 0% PnL in history
+        else:
+            exit_value = exit_price * row['quantity'] * 100 if exit_price and exit_price > 0 else 0
 
         # Calculate P&L
         pnl = None
