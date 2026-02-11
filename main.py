@@ -164,7 +164,8 @@ class SwingTradingBot:
         log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
         # File handler - captures everything including verbose ib_insync messages
-        file_handler = logging.FileHandler('trading_bot.log')
+        from logging.handlers import TimedRotatingFileHandler
+        file_handler = TimedRotatingFileHandler('trading_bot.log', when='midnight', interval=1, backupCount=30)
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(logging.Formatter(log_format))
 
