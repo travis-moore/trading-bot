@@ -535,10 +535,14 @@ class TradingEngine:
         bid, ask, last = price_data
         raw_price = (bid + ask) / 2 if bid > 0 and ask > 0 else last
         # Round to nearest $0.05 tick (standard option tick increment)
-        entry_price = round(raw_price * 20) / 20
+        # Ensure we don't round down to 0 for cheap options
+        if raw_price > 0 and raw_price < 0.05:
+            entry_price = raw_price  # Keep raw price for penny options
+        else:
+            entry_price = round(raw_price * 20) / 20
 
         if entry_price <= 0:
-            logger.error(f"[{strategy_label}] Invalid option price for {contract.localSymbol}")
+            logger.error(f"[{strategy_label}] Invalid option price for {contract.localSymbol}: ${entry_price} (Raw: ${raw_price})")
             return False
 
         # Calculate position size (scaled by signal confidence)

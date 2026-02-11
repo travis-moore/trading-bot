@@ -414,11 +414,17 @@ class IBWrapper:
         """
         try:
             ticker = self.ib.reqMktData(contract, '', False, False)
-            self.ib.sleep(2)
             
-            bid = ticker.bid if ticker.bid == ticker.bid else 0
-            ask = ticker.ask if ticker.ask == ticker.ask else 0
-            last = ticker.last if ticker.last == ticker.last else 0
+            # Wait for data to arrive (up to 4 seconds)
+            for _ in range(20):
+                self.ib.sleep(0.2)
+                if (ticker.bid > 0 and ticker.ask > 0) or ticker.last > 0:
+                    break
+            
+            # Check values, handling NaN
+            bid = ticker.bid if (ticker.bid and ticker.bid == ticker.bid) else 0.0
+            ask = ticker.ask if (ticker.ask and ticker.ask == ticker.ask) else 0.0
+            last = ticker.last if (ticker.last and ticker.last == ticker.last) else 0.0
             
             self.ib.cancelMktData(contract)
             
