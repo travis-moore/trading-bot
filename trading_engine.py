@@ -972,6 +972,12 @@ class TradingEngine:
 
             if ib_qty == 0:
                 # Position gone from IB entirely — closed manually
+                
+                # Check if it was actually filled (e.g. while bot was disconnected/restarting)
+                # by looking at recent executions
+                if self._detect_execution_fill(position):
+                    continue
+
                 strategy_name = position.strategy_name or 'unknown'
                 strategy_label = self._get_strategy_label(strategy_name)
                 logger.info(
@@ -986,6 +992,48 @@ class TradingEngine:
                     )
                 self.positions.remove(position)
     
+    def _detect_execution_fill(self, position: Position) -> bool:
+        """
+        Check if a position was closed by an execution that we missed 
+        (e.g. happened while offline or trade object lost).
+        """
+        # Get recent fills from IB (ib_insync maintains a cache of fills)
+        fills = self.ib.ib.fills()
+        
+        # Determine closing action (SELL for Longs, BUY for Shorts)
+        is_long = position.direction in (TradeDirection.LONG_CALL, TradeDirection.LONG_PUT, 
+                                        TradeDirection.LONG_PUT_STRAIGHT, TradeDirection.BULL_PUT_SPREAD)
+        required_action = 'SELL' if is_long else 'BUY'
+        
+        for fill in fills:
+            # Match contract
+            if fill.contract.conId == position.contract.conId:
+                # Match side
+                if fill.execution.side == required_action:
+                    # Check time: fill must be after entry
+                    # Note: fill.time is timezone aware, position.entry_time might need adjustment
+                    fill_time = fill.time
+                    if fill_time.tzinfo is None:
+                        fill_time = fill_time.astimezone()
+                    
+                    entry_time = position.entry_time
+                    if entry_time.tzinfo is None:
+                        entry_time = entry_time.astimezone()
+
+                    if fill_time > entry_time:
+                        # Found a matching closing fill
+                        reason = 'unknown_fill'
+                        ref = fill.execution.orderRef or ''
+                        
+                        if '_TP' in ref: reason = 'take_profit_filled'
+                        elif '_SL' in ref: reason = 'stop_loss_filled'
+                        elif position.profit_target and fill.execution.price >= position.profit_target: reason = 'take_profit_filled'
+                        elif position.stop_loss and fill.execution.price <= position.stop_loss: reason = 'stop_loss_filled'
+                            
+                        self._process_successful_exit(position, fill.execution.price, reason, fill.execution.orderId)
+                        return True
+        return False
+
     def _should_exit_position(self, position: Position) -> tuple[bool, str]:
         """
         Check if position should be exited

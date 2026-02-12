@@ -463,6 +463,9 @@ class SwingTradingBot:
         ib_by_conid = {}
         for item in ib_portfolio:
             ib_by_conid[item.contract.conId] = item
+            
+        # Get all open orders to re-attach bracket orders if possible
+        open_trades = self.ib.get_open_orders()
 
         restored = 0
         closed = 0
@@ -502,6 +505,19 @@ class SwingTradingBot:
                 except ValueError:
                     # Pattern is not in the legacy Enum (likely a strategy-specific string)
                     pattern = row['pattern']
+                
+                # Try to re-attach bracket orders using order_ref
+                tp_trade = None
+                sl_trade = None
+                order_ref = row['order_ref']
+                if order_ref:
+                    tp_ref = f"{order_ref}_TP"
+                    sl_ref = f"{order_ref}_SL"
+                    for trade in open_trades:
+                        if trade.order.orderRef == tp_ref:
+                            tp_trade = trade
+                        elif trade.order.orderRef == sl_ref:
+                            sl_trade = trade
 
                 position = Position(
                     contract=contract,
@@ -516,6 +532,8 @@ class SwingTradingBot:
                     order_ref=row['order_ref'],
                     strategy_name=strategy,
                     peak_price=row['peak_price'] if 'peak_price' in row.keys() else row['entry_price'],
+                    stop_loss_trade=sl_trade,
+                    take_profit_trade=tp_trade,
                 )
                 self.engine.positions.append(position)
                 restored += 1
