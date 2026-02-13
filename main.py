@@ -290,7 +290,8 @@ class SwingTradingBot:
                 trade_db=self.db,
                 strategy_manager=self.strategy_manager,
                 market_regime_detector=self.market_regime,
-                sector_manager=self.sector_manager
+                sector_manager=self.sector_manager,
+                notifier=self.notifier
             )
 
             # Reconcile DB positions with IB account state
@@ -850,9 +851,6 @@ class SwingTradingBot:
         if success:
             self.stats['trades_entered'] += 1
             self.logger.info("Trade entered successfully")
-            if self.notifier:
-                self.notifier.send_trade_alert(symbol, direction.value, current_price, 
-                                             getattr(signal, 'pattern_name', 'Unknown Pattern'))
         else:
             self.logger.warning("Failed to enter trade")
     

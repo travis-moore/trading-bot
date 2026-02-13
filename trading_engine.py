@@ -101,7 +101,7 @@ class TradingEngine:
 
     def __init__(self, ib_wrapper: IBWrapper, analyzer: LiquidityAnalyzer, config: Dict,
                  trade_db=None, strategy_manager=None,
-                 market_regime_detector=None, sector_manager=None):
+                 market_regime_detector=None, sector_manager=None, notifier=None):
         """
         Initialize trading engine.
 
@@ -113,6 +113,7 @@ class TradingEngine:
             strategy_manager: Optional StrategyManager for plugin-based strategies
             market_regime_detector: Optional MarketRegimeDetector
             sector_manager: Optional SectorRotationManager
+            notifier: Optional notifier for trade alerts
         """
         self.ib = ib_wrapper
         self.analyzer = analyzer
@@ -121,6 +122,7 @@ class TradingEngine:
         self.strategy_manager = strategy_manager
         self.market_regime_detector = market_regime_detector
         self.sector_manager = sector_manager
+        self.notifier = notifier
 
         # Active positions (filled orders)
         self.positions: List[Position] = []
@@ -891,6 +893,18 @@ class TradingEngine:
             f"[{strategy_label}] Position opened: {pending.contract.localSymbol} x{filled_qty} "
             f"@ ${fill_price:.2f} (SL: ${pending.stop_loss:.2f}, TP: ${pending.profit_target:.2f})"
         )
+
+        if self.notifier:
+            pattern_name = pending.pattern
+            if hasattr(pattern_name, 'value'):
+                pattern_name = pattern_name.value
+            
+            self.notifier.send_trade_alert(
+                pending.contract.localSymbol,
+                pending.direction.value,
+                fill_price,
+                str(pattern_name)
+            )
 
     def _cancel_pending_order(self, pending: PendingOrder, reason: str):
         """Cancel a pending order and clean up."""
