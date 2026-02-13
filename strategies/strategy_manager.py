@@ -16,8 +16,10 @@ from .base_strategy import BaseStrategy, StrategySignal
 
 logger = logging.getLogger(__name__)
 
-# Files that should not be treated as strategies
-EXCLUDED_FILES = {'__init__.py', 'base_strategy.py', 'strategy_manager.py', 'template_strategy.py'}
+# Files that should not be treated as standalone strategy types.
+# options_strategies.py contains multiple classes registered individually in BUILTIN_STRATEGIES.
+EXCLUDED_FILES = {'__init__.py', 'base_strategy.py', 'strategy_manager.py', 'template_strategy.py',
+                  'options_strategies.py'}
 
 
 class StrategyManager:
@@ -440,14 +442,14 @@ class StrategyManager:
 
     def get_unloaded_strategies(self) -> Set[str]:
         """
-        Get strategies that are available but not currently loaded.
+        Get strategy types that are available but not used by any loaded instance.
 
         Returns:
-            Set of strategy names that can be loaded
+            Set of strategy type names that aren't backing any loaded instance
         """
         available = self.discover_strategies()
-        loaded = set(self._strategies.keys())
-        return available - loaded
+        loaded_types = set(self._instance_types.values())
+        return available - loaded_types
 
     def load_new_strategies(self) -> int:
         """

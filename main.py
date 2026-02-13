@@ -963,6 +963,8 @@ class SwingTradingBot:
             self._cmd_help()
         elif command == '/status':
             self.print_status()
+        elif command == '/positions':
+            self._cmd_positions()
         elif command == '/strategies':
             self._cmd_strategies()
         elif command == '/reload':
@@ -1011,6 +1013,7 @@ class SwingTradingBot:
 Available commands:
   /help              - Show this help message
   /status            - Show bot status
+  /positions         - Show open positions and pending orders
   /strategies        - List all strategies and their status
   /reload            - Reload all strategies from disk
   /reload <name>     - Reload a specific strategy
@@ -1026,6 +1029,66 @@ Available commands:
   /quit or /stop     - Stop the bot gracefully
 """
         print(help_text)
+
+    def _cmd_positions(self):
+        """Show detailed info for all open positions and pending orders."""
+        positions = self.engine.positions
+        pending = self.engine.pending_orders
+
+        print("\n" + "=" * 60)
+        print("OPEN POSITIONS")
+        print("=" * 60)
+
+        if not positions and not pending:
+            print("  No open positions or pending orders.")
+            print("=" * 60 + "\n")
+            return
+
+        now = datetime.now()
+        for i, p in enumerate(positions, 1):
+            symbol = p.contract.symbol if hasattr(p.contract, 'symbol') else p.contract.localSymbol
+            local = getattr(p.contract, 'localSymbol', symbol)
+            days_held = (now - p.entry_time.replace(tzinfo=None) if p.entry_time.tzinfo else now - p.entry_time).days
+
+            # Get current price for P&L
+            current_price = None
+            try:
+                price_data = self.ib.get_option_price(p.contract)
+                if price_data:
+                    bid, ask, last = price_data
+                    current_price = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+            except Exception:
+                pass
+
+            pnl_str = ""
+            if current_price and current_price > 0:
+                pnl_per_contract = (current_price - p.entry_price) * 100
+                pnl_total = pnl_per_contract * p.quantity
+                pnl_pct = (current_price - p.entry_price) / p.entry_price * 100
+                pnl_str = f"  P&L: ${pnl_total:+.2f} ({pnl_pct:+.1f}%) | Current: ${current_price:.2f}"
+
+            strategy = p.strategy_name or "unknown"
+            direction = p.direction.value if hasattr(p.direction, 'value') else str(p.direction)
+
+            print(f"  [{i}] {local} ({direction})")
+            print(f"      Strategy: {strategy} | Qty: {p.quantity}")
+            print(f"      Entry: ${p.entry_price:.2f} | SL: ${p.stop_loss:.2f} | TP: ${p.profit_target:.2f}")
+            print(f"      Held: {days_held}d | Since: {p.entry_time.strftime('%Y-%m-%d %H:%M')}")
+            if p.peak_price:
+                print(f"      Peak: ${p.peak_price:.2f}")
+            if pnl_str:
+                print(pnl_str)
+
+        if pending:
+            print("-" * 60)
+            print("PENDING ORDERS")
+            for i, po in enumerate(pending, 1):
+                symbol = po.contract.symbol if hasattr(po.contract, 'symbol') else po.contract.localSymbol
+                local = getattr(po.contract, 'localSymbol', symbol)
+                strategy = po.strategy_name or "unknown"
+                print(f"  [{i}] {local} | Strategy: {strategy} | Entry: ${po.entry_price:.2f}")
+
+        print("=" * 60 + "\n")
 
     def _cmd_strategies(self):
         """List all strategies and their status."""
@@ -1103,9 +1166,7 @@ Available commands:
             self.logger.warning("Strategy manager not available")
             return
 
-        available = self.strategy_manager.discover_strategies()
-        loaded = set(self.strategy_manager.get_all_strategies().keys())
-        new_strategies = available - loaded
+        new_strategies = self.strategy_manager.get_unloaded_strategies()
 
         if not new_strategies:
             self.logger.info("No new strategy files found")
