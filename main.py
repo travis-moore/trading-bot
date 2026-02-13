@@ -190,7 +190,11 @@ class SwingTradingBot:
         self.logger = logging.getLogger(__name__)
     
     def _signal_handler(self, signum, frame):
-        """Handle shutdown signals"""
+        """Handle shutdown signals. Second signal forces immediate exit."""
+        if not self.running:
+            # Already shutting down — second Ctrl+C forces immediate exit
+            self.logger.warning("Force shutdown requested, exiting immediately...")
+            os._exit(1)
         self.logger.info("Shutdown signal received, stopping bot...")
         self.running = False
     
@@ -1405,8 +1409,11 @@ Available commands:
                         self.logger.info(f"Auto-discovered and loaded {loaded} new strategies")
                     discovery_counter = 0
 
-                # Wait for next scan
-                time.sleep(scan_interval)
+                # Wait for next scan (interruptible — checks self.running every 0.5s)
+                elapsed = 0.0
+                while elapsed < scan_interval and self.running:
+                    time.sleep(min(0.5, scan_interval - elapsed))
+                    elapsed += 0.5
 
         except KeyboardInterrupt:
             self.logger.info("Keyboard interrupt received")
@@ -1415,42 +1422,66 @@ Available commands:
         finally:
             self.shutdown()
     
+    def _shutdown_with_timeout(self, func, description, timeout=5):
+        """Run a shutdown step in a thread with a timeout."""
+        t = threading.Thread(target=func, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            self.logger.warning(f"Shutdown step timed out after {timeout}s: {description}")
+
     def shutdown(self):
-        """Clean shutdown"""
+        """Clean shutdown with timeouts to prevent hanging."""
         self.logger.info("Shutting down bot...")
-        
+
         # Print final status
-        self.print_status()
-        
-        # Cancel market depth subscriptions
-        for symbol, ticker in self.tickers.items():
-            try:
-                contract = ticker.contract
-                self.ib.cancel_market_depth(contract)
-            except Exception as e:
-                self.logger.error(f"Error canceling depth for {symbol}: {e}")
-        
-        # Cancel market data subscriptions
-        for symbol, ticker in self.price_tickers.items():
-            try:
-                self.ib.cancel_market_data(ticker.contract)
-            except Exception as e:
-                self.logger.error(f"Error canceling market data for {symbol}: {e}")
+        try:
+            self.print_status()
+        except Exception:
+            pass
+
+        # Cancel market depth subscriptions (with timeout)
+        def cancel_depth():
+            for symbol, ticker in self.tickers.items():
+                try:
+                    self.ib.cancel_market_depth(ticker.contract)
+                except Exception as e:
+                    self.logger.error(f"Error canceling depth for {symbol}: {e}")
+        self._shutdown_with_timeout(cancel_depth, "cancel market depth")
+
+        # Cancel market data subscriptions (with timeout)
+        def cancel_market_data():
+            for symbol, ticker in self.price_tickers.items():
+                try:
+                    self.ib.cancel_market_data(ticker.contract)
+                except Exception as e:
+                    self.logger.error(f"Error canceling market data for {symbol}: {e}")
+        self._shutdown_with_timeout(cancel_market_data, "cancel market data")
 
         # Close database
         if self.db:
-            self.db.close()
+            try:
+                self.db.close()
+            except Exception:
+                pass
 
-        # Disconnect from IB
+        # Disconnect from IB (with timeout)
         if self.ib:
-            self.ib.disconnect()
+            self._shutdown_with_timeout(self.ib.disconnect, "IB disconnect")
 
         # Close data log
         if self.data_log_file:
-            self.data_log_file.close()
+            try:
+                self.data_log_file.close()
+            except Exception:
+                pass
 
+        # Send Discord notification (with timeout)
         if self.notifier:
-            self.notifier.send_message("🛑 **Swing Trading Bot Stopped**")
+            self._shutdown_with_timeout(
+                lambda: self.notifier.send_message("🛑 **Swing Trading Bot Stopped**"),
+                "Discord notification", timeout=5
+            )
 
         self.logger.info("Bot shutdown complete")
 
