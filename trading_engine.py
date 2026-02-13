@@ -401,7 +401,7 @@ class TradingEngine:
             expiry_days_max=self.config.get('max_dte', 45)
         )
         
-        if not expiries:
+        if not chain or not expiries:
             logger.warning(f"No valid option expirations found for {symbol}")
             return None
         

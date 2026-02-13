@@ -5,7 +5,7 @@ Provides clean interface for options trading and market data
 
 from ib_insync import *
 import logging
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Any
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -256,7 +256,7 @@ class IBWrapper:
             return None
 
     def get_option_chain(self, symbol: str, expiry_days_min: int = 7, 
-                         expiry_days_max: int = 60) -> List[Contract]:
+                         expiry_days_max: int = 60) -> Tuple[Optional[Any], List[str]]:
         """
         Get available option contracts
         
@@ -266,7 +266,7 @@ class IBWrapper:
             expiry_days_max: Maximum days to expiration
             
         Returns:
-            List of option contracts
+            Tuple of (chain_object, list_of_expirations)
         """
         try:
             if symbol in self.KNOWN_INDICES:
@@ -281,7 +281,7 @@ class IBWrapper:
             
             if not chains:
                 logger.warning(f"No option chains found for {symbol}")
-                return []
+                return None, []
             
             # Get chain for primary exchange (SMART preferred)
             # Select the chain with the most expirations/strikes to ensure we get the main chain
