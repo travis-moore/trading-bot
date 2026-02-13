@@ -482,7 +482,9 @@ class IBWrapper:
     def sell_option(self, contract: Contract, quantity: int = 1,
                     limit_price: Optional[float] = None,
                     tif: str = 'DAY',
-                    order_ref: Optional[str] = None) -> Optional[Trade]:
+                    order_ref: Optional[str] = None,
+                    oca_group: Optional[str] = None,
+                    oca_type: int = 1) -> Optional[Trade]:
         """
         Sell an option contract
 
@@ -492,6 +494,8 @@ class IBWrapper:
             limit_price: Limit price (None for market order)
             tif: Time in force - 'DAY' or 'GTC' (Good Till Cancelled)
             order_ref: Optional order reference tag for tracking
+            oca_group: OCA group name (to link with other orders)
+            oca_type: OCA type (1 = Cancel with Block)
 
         Returns:
             Trade object or None
@@ -504,6 +508,10 @@ class IBWrapper:
             order.tif = tif
             if order_ref:
                 order.orderRef = order_ref
+            
+            if oca_group:
+                order.ocaGroup = oca_group
+                order.ocaType = oca_type
 
             trade = self.ib.placeOrder(contract, order)
             logger.info(f"Placed sell order: {contract.localSymbol} x{quantity}")
@@ -524,6 +532,49 @@ class IBWrapper:
             logger.error(f"Error selling option: {e}")
             return None
     
+    def place_trailing_stop(self, contract: Contract, quantity: int, 
+                            trailing_percent: float, 
+                            tif: str = 'GTC',
+                            oca_group: Optional[str] = None,
+                            oca_type: int = 1,
+                            order_ref: Optional[str] = None) -> Optional[Trade]:
+        """
+        Place a trailing stop sell order.
+
+        Args:
+            contract: Contract to sell
+            quantity: Number of contracts
+            trailing_percent: Trailing amount in percent (e.g. 5.0 for 5%)
+            tif: Time in force
+            oca_group: OCA group name (to link with Take Profit)
+            oca_type: OCA type (1 = Cancel with Block)
+            order_ref: Order reference
+
+        Returns:
+            Trade object or None
+        """
+        try:
+            order = Order()
+            order.action = 'SELL'
+            order.orderType = 'TRAIL'
+            order.totalQuantity = quantity
+            order.trailingPercent = trailing_percent
+            order.tif = tif
+            
+            if oca_group:
+                order.ocaGroup = oca_group
+                order.ocaType = oca_type
+            
+            if order_ref:
+                order.orderRef = order_ref
+                
+            trade = self.ib.placeOrder(contract, order)
+            logger.info(f"Placed trailing stop: {contract.localSymbol} x{quantity} at {trailing_percent}% trail")
+            return trade
+        except Exception as e:
+            logger.error(f"Error placing trailing stop: {e}")
+            return None
+
     def get_positions(self) -> List[Position]:
         """Get current positions"""
         try:

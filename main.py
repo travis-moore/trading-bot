@@ -514,15 +514,22 @@ class SwingTradingBot:
                 # Try to re-attach bracket orders using order_ref
                 tp_trade = None
                 sl_trade = None
+                trailing_active = False
                 order_ref = row['order_ref']
                 if order_ref:
                     tp_ref = f"{order_ref}_TP"
                     sl_ref = f"{order_ref}_SL"
+                    trail_ref = f"{order_ref}_TRAIL"
                     for trade in open_trades:
                         if trade.order.orderRef == tp_ref:
                             tp_trade = trade
                         elif trade.order.orderRef == sl_ref:
                             sl_trade = trade
+                        elif trade.order.orderRef == trail_ref:
+                            sl_trade = trade
+                            trailing_active = True
+                        elif trade.order.orderRef == sl_ref and trade.order.orderType == 'TRAIL':
+                            trailing_active = True
 
                 position = Position(
                     contract=contract,
@@ -539,6 +546,7 @@ class SwingTradingBot:
                     peak_price=row['peak_price'] if 'peak_price' in row.keys() else row['entry_price'],
                     stop_loss_trade=sl_trade,
                     take_profit_trade=tp_trade,
+                    trailing_stop_active=trailing_active
                 )
                 self.engine.positions.append(position)
                 restored += 1

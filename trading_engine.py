@@ -86,6 +86,7 @@ class Position:
     stop_loss_trade: Optional[Any] = None  # Attached stop loss order
     take_profit_trade: Optional[Any] = None  # Attached take profit order
     peak_price: Optional[float] = None  # Highest/Lowest price seen since entry (for trailing stop)
+    trailing_stop_active: bool = False  # Whether server-side trailing stop is active
 
 
 class TradingEngine:
@@ -1127,7 +1128,8 @@ class TradingEngine:
                 if self.db and position.db_id:
                     self.db.update_position_peak_price(position.db_id, current_price)
         elif position.direction == TradeDirection.LONG_PUT:
-            if current_price < position.peak_price and current_price > 0:
+            # For Long Put, we still want option price to go UP. Peak is max price.
+            if current_price > position.peak_price:
                 position.peak_price = current_price
                 if self.db and position.db_id:
                     self.db.update_position_peak_price(position.db_id, current_price)
@@ -1145,32 +1147,54 @@ class TradingEngine:
             activation_pct = self.config.get('trailing_stop_activation_pct', 0.10)
             distance_pct = self.config.get('trailing_stop_distance_pct', 0.05)
             
-            if position.direction == TradeDirection.LONG_CALL:
-                # Calculate current profit pct based on peak
-                peak_profit_pct = (position.peak_price - position.entry_price) / position.entry_price
-                
-                if peak_profit_pct >= activation_pct:
-                    # Trailing active
-                    trail_price = position.peak_price * (1.0 - distance_pct)
-                    # Ensure trail doesn't move stop down (only up)
-                    effective_stop = max(position.stop_loss, trail_price)
-                    
-                    if current_price <= effective_stop:
-                        return True, f"Trailing stop hit (${current_price:.2f} <= ${effective_stop:.2f}, peak: ${position.peak_price:.2f})"
+            # Calculate current profit pct based on peak (for both Calls and Puts, we want premium to rise)
+            peak_profit_pct = (position.peak_price - position.entry_price) / position.entry_price
             
-            elif position.direction == TradeDirection.LONG_PUT:
-                # Calculate current profit pct based on peak (lowest price)
-                # For puts, profit is when price goes down
-                peak_profit_pct = (position.entry_price - position.peak_price) / position.entry_price
+            if peak_profit_pct >= activation_pct:
+                # Activation threshold reached
                 
-                if peak_profit_pct >= activation_pct:
-                    # Trailing active
-                    trail_price = position.peak_price * (1.0 + distance_pct)
-                    # Ensure trail doesn't move stop up (only down)
-                    effective_stop = min(position.stop_loss, trail_price)
+                if not position.trailing_stop_active:
+                    # Switch to server-side trailing stop
+                    strategy_label = self._get_strategy_label(position.strategy_name or 'unknown')
+                    logger.info(f"[{strategy_label}] Activating server-side trailing stop for {position.contract.localSymbol} (Profit: {peak_profit_pct:.1%})")
                     
-                    if current_price >= effective_stop:
-                        return True, f"Trailing stop hit (${current_price:.2f} >= ${effective_stop:.2f}, peak: ${position.peak_price:.2f})"
+                    # 1. Cancel existing bracket orders (SL and TP)
+                    # Cancelling SL usually cancels TP in OCA, but we cancel both to be clean
+                    if position.stop_loss_trade:
+                        self.ib.cancel_order(position.stop_loss_trade)
+                    if position.take_profit_trade:
+                        self.ib.cancel_order(position.take_profit_trade)
+                        
+                    # 2. Create new OCA group for Trailing Stop + TP
+                    new_oca_group = f"{position.order_ref}_TRAIL_{int(datetime.now().timestamp())}"
+                    
+                    # 3. Place new Take Profit (Limit Sell) linked to OCA
+                    new_tp_trade = self.ib.sell_option(
+                        contract=position.contract,
+                        quantity=position.quantity,
+                        limit_price=position.profit_target,
+                        tif='GTC',
+                        order_ref=f"{position.order_ref}_TP_TRAIL",
+                        oca_group=new_oca_group
+                    )
+
+                    # 4. Place new Trailing Stop linked to OCA
+                    trailing_percent = distance_pct * 100  # Convert 0.05 to 5.0
+                    new_sl_trade = self.ib.place_trailing_stop(
+                        contract=position.contract,
+                        quantity=position.quantity,
+                        trailing_percent=trailing_percent,
+                        oca_group=new_oca_group,
+                        order_ref=f"{position.order_ref}_SL_TRAIL"
+                    )
+                    
+                    if new_tp_trade and new_sl_trade:
+                        position.take_profit_trade = new_tp_trade
+                        position.stop_loss_trade = new_sl_trade
+                        position.trailing_stop_active = True
+                        logger.info(f"[{strategy_label}] Replaced Bracket with Trailing Stop ({trailing_percent}%) + TP OCA")
+                    else:
+                        logger.error(f"[{strategy_label}] Failed to place trailing stop OCA orders")
         
         # Check time-based exit (per-strategy override)
         now = datetime.now()
@@ -1189,6 +1213,12 @@ class TradingEngine:
         strategy_name = position.strategy_name or 'unknown'
         strategy_label = self._get_strategy_label(strategy_name)
         logger.info(f"[{strategy_label}] Exiting position: {position.contract.localSymbol}. Reason: {reason}")
+
+        # Cancel bracket orders if they exist to prevent race conditions
+        if position.stop_loss_trade:
+            self.ib.cancel_order(position.stop_loss_trade)
+        if position.take_profit_trade:
+            self.ib.cancel_order(position.take_profit_trade)
 
         # Place sell order
         trade = self.ib.sell_option(position.contract, position.quantity)
