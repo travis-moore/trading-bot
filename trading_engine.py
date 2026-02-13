@@ -14,6 +14,7 @@ from enum import Enum
 from ib_insync import Contract
 from ib_wrapper import IBWrapper
 from market_context import MarketRegime, MarketRegimeDetector, SectorRotationManager
+from market_snapshot import MarketSnapshot, record_snapshot
 
 # Legacy imports for backward compatibility
 from liquidity_analyzer import LiquidityAnalyzer, Pattern, PatternSignal
@@ -646,6 +647,39 @@ class TradingEngine:
             f"@ ${entry_price:.2f} (SL: ${stop_loss:.2f}, TP: ${profit_target:.2f})"
         )
 
+        # --- SNAPSHOT: SIGNAL PHASE ---
+        # Capture market state right before placing order
+        try:
+            depth_snap = self.ib.get_depth_snapshot(contract, num_rows=10)
+            acct_val = self.ib.get_account_value() or 0.0
+            
+            # Calculate spread bps
+            spread_bps = 0.0
+            if bid > 0 and ask > 0:
+                mid = (bid + ask) / 2
+                spread_bps = ((ask - bid) / mid) * 10000
+            
+            # Get regime
+            regime = self.market_regime_detector.current_regime.value if (self.market_regime_detector and self.market_regime_detector.current_regime) else "unknown"
+
+            signal_snapshot = MarketSnapshot(
+                timestamp=datetime.now().isoformat(),
+                asset_ticker=contract.localSymbol,
+                best_bid=bid,
+                best_ask=ask,
+                order_book_depth=depth_snap,
+                rsi_14=None, # RSI not currently calculated in engine
+                account_balance=acct_val,
+                phase='signal_phase',
+                trade_id=None, # Will be updated if order_ref is generated
+                spread_bps=spread_bps,
+                market_regime=regime,
+                side='BUY'
+            )
+        except Exception as e:
+            logger.error(f"Failed to create signal snapshot: {e}")
+            signal_snapshot = None
+
         # Generate order tag and persist before placing order (crash safety)
         order_ref = None
         db_id = None
@@ -672,6 +706,11 @@ class TradingEngine:
                 'status': 'pending_fill',
                 'peak_price': entry_price,
             })
+            
+            # Update snapshot with trade ID and save
+            if signal_snapshot:
+                signal_snapshot.trade_id = order_ref
+                record_snapshot(signal_snapshot)
 
         # Place bracket order (entry + stop loss + take profit)
         if self.use_bracket_orders:
@@ -687,6 +726,8 @@ class TradingEngine:
 
             if trades is None:
                 logger.error(f"[{strategy_label}] Failed to place bracket order for {contract.localSymbol}")
+                if self.notifier:
+                    self.notifier.send_message(f"⚠️ **ORDER FAILED**: Bracket order failed for {contract.localSymbol}")
                 if self.db and db_id:
                     self.db.close_position(db_id, 0, 'order_failed')
                 return False
@@ -699,6 +740,8 @@ class TradingEngine:
             )
             if entry_trade is None:
                 logger.error(f"[{strategy_label}] Failed to place order for {contract.localSymbol}")
+                if self.notifier:
+                    self.notifier.send_message(f"⚠️ **ORDER FAILED**: Order placement failed for {contract.localSymbol}")
                 if self.db and db_id:
                     self.db.close_position(db_id, 0, 'order_failed')
                 return False
@@ -762,6 +805,9 @@ class TradingEngine:
 
         # Check if entry order was cancelled externally
         if status['status'] in ('Cancelled', 'Inactive', 'ApiCancelled', 'Rejected'):
+            if status['status'] == 'Rejected' and self.notifier:
+                self.notifier.send_message(f"🚫 **ORDER REJECTED**: {pending.contract.localSymbol} ({pending.strategy_name})")
+
             if filled_qty > 0:
                 # Partial fill before cancel - convert filled portion to position
                 logger.info(
@@ -894,6 +940,49 @@ class TradingEngine:
             f"[{strategy_label}] Position opened: {pending.contract.localSymbol} x{filled_qty} "
             f"@ ${fill_price:.2f} (SL: ${pending.stop_loss:.2f}, TP: ${pending.profit_target:.2f})"
         )
+
+        # --- SNAPSHOT: EXECUTION PHASE ---
+        try:
+            # Get fresh price/depth data for execution snapshot
+            price_data = self.ib.get_option_price(pending.contract)
+            bid, ask, _ = price_data if price_data else (0, 0, 0)
+            depth_snap = self.ib.get_depth_snapshot(pending.contract, num_rows=10)
+            acct_val = self.ib.get_account_value() or 0.0
+
+            # Calculate spread bps
+            spread_bps = 0.0
+            if bid > 0 and ask > 0:
+                mid = (bid + ask) / 2
+                spread_bps = ((ask - bid) / mid) * 10000
+
+            # Get regime
+            regime = self.market_regime_detector.current_regime.value if (self.market_regime_detector and self.market_regime_detector.current_regime) else "unknown"
+
+            # Calculate latency
+            latency_ms = 0.0
+            if pending.order_time:
+                latency_ms = (datetime.now() - pending.order_time).total_seconds() * 1000
+
+            exec_snapshot = MarketSnapshot(
+                timestamp=datetime.now().isoformat(),
+                asset_ticker=pending.contract.localSymbol,
+                best_bid=bid,
+                best_ask=ask,
+                order_book_depth=depth_snap,
+                rsi_14=None,
+                account_balance=acct_val,
+                phase='execution_phase',
+                trade_id=pending.order_ref,
+                fill_price=fill_price,
+                trade_size=filled_qty,
+                spread_bps=spread_bps,
+                execution_latency_ms=latency_ms,
+                market_regime=regime,
+                side='BUY'
+            )
+            record_snapshot(exec_snapshot)
+        except Exception as e:
+            logger.error(f"Failed to record execution snapshot: {e}")
 
         if self.notifier:
             pattern_name = pending.pattern

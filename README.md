@@ -291,6 +291,24 @@ Account value: $42,156.78
 - `WARNING`: Issues and skipped trades
 - `ERROR`: Failures and exceptions
 
+## Market Snapshot System
+
+The bot automatically records detailed market snapshots (Order Book, Price, Account) during trade execution. This allows you to analyze **Slippage** and **Execution Quality** post-trade.
+
+**Usage:**
+
+~~~bash
+# Analyze a specific trade to see slippage and liquidity warnings
+python snapshot_analyzer.py <TRADE_ID>
+
+# Generate global execution quality report (Avg Slippage, Latency, etc.)
+python snapshot_analyzer.py --report
+~~~
+
+Snapshots are saved in the `snapshots/` directory.
+
+👉 **See SNAPSHOT_README.md for full documentation.**
+
 ## Development
 
 ### Adding New Patterns

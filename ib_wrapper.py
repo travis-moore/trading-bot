@@ -629,6 +629,33 @@ class IBWrapper:
         except Exception as e:
             logger.error(f"Error canceling market depth: {e}")
     
+    def get_depth_snapshot(self, contract: Contract, num_rows: int = 5) -> Dict[str, List[Dict]]:
+        """
+        Get a quick snapshot of market depth (top N rows).
+        Note: This subscribes, waits briefly, and unsubscribes.
+        """
+        try:
+            self.ib.qualifyContracts(contract)
+            # Use smart depth if available
+            ticker = self.ib.reqMktDepth(contract, numRows=num_rows, isSmartDepth=True)
+            
+            # Wait briefly for data
+            for _ in range(5):
+                self.ib.sleep(0.2)
+                if ticker.domBids and ticker.domAsks:
+                    break
+            
+            bids = [{'price': l.price, 'size': l.size} for l in ticker.domBids[:num_rows]]
+            asks = [{'price': l.price, 'size': l.size} for l in ticker.domAsks[:num_rows]]
+            
+            self.ib.cancelMktDepth(contract)
+            
+            return {'bids': bids, 'asks': asks}
+            
+        except Exception as e:
+            logger.error(f"Error getting depth snapshot: {e}")
+            return {'bids': [], 'asks': []}
+
     def get_account_value(self, tag: str = 'NetLiquidation') -> Optional[float]:
         """
         Get account value

@@ -619,7 +619,10 @@ class SwingTradingBot:
                 if self._check_strategy_loss_limit(name):
                     paused_strategies.add(name)
                     if self.stats['scans'] % 60 == 0:  # Log periodically
-                        self.logger.warning(f"Strategy '{name}' paused: hit daily loss limit.")
+                        msg = f"Strategy '{name}' paused: hit daily loss limit."
+                        self.logger.warning(msg)
+                        if self.notifier:
+                            self.notifier.send_message(f"⚠️ **STRATEGY PAUSED**: {msg}")
                     continue
 
                 # Check consecutive losses
@@ -802,7 +805,10 @@ class SwingTradingBot:
         today_pnl = self.db.get_today_realized_pnl()
         if today_pnl <= -limit:
             if self.stats['scans'] % 60 == 0:  # Log periodically (every ~5 mins)
-                self.logger.warning(f"Daily loss limit reached (${today_pnl:.2f} <= -${limit:.2f}). Pausing new trades.")
+                msg = f"Daily loss limit reached (${today_pnl:.2f} <= -${limit:.2f}). Pausing new trades."
+                self.logger.warning(msg)
+                if self.notifier:
+                    self.notifier.send_message(f"🛑 **PERFORMANCE ALERT**: {msg}")
             return True
             
         return False
@@ -1514,6 +1520,8 @@ Available commands:
             self.logger.info("Keyboard interrupt received")
         except Exception as e:
             self.logger.error(f"Unexpected error in main loop: {e}", exc_info=True)
+            if self.notifier:
+                self.notifier.send_message(f"🚨 **CRITICAL ERROR**: Bot crashed! {e}")
         finally:
             self.shutdown()
     
