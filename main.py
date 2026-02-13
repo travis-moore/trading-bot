@@ -1543,23 +1543,20 @@ Available commands:
         except Exception:
             pass
 
-        # Cancel market depth subscriptions (with timeout)
-        def cancel_depth():
-            for symbol, ticker in self.tickers.items():
-                try:
-                    self.ib.cancel_market_depth(ticker.contract)
-                except Exception as e:
-                    self.logger.error(f"Error canceling depth for {symbol}: {e}")
-        self._shutdown_with_timeout(cancel_depth, "cancel market depth")
+        # Cancel market depth subscriptions
+        # Run directly in main thread to ensure access to asyncio event loop
+        for symbol, ticker in self.tickers.items():
+            try:
+                self.ib.cancel_market_depth(ticker.contract)
+            except Exception as e:
+                self.logger.error(f"Error canceling depth for {symbol}: {e}")
 
-        # Cancel market data subscriptions (with timeout)
-        def cancel_market_data():
-            for symbol, ticker in self.price_tickers.items():
-                try:
-                    self.ib.cancel_market_data(ticker.contract)
-                except Exception as e:
-                    self.logger.error(f"Error canceling market data for {symbol}: {e}")
-        self._shutdown_with_timeout(cancel_market_data, "cancel market data")
+        # Cancel market data subscriptions
+        for symbol, ticker in self.price_tickers.items():
+            try:
+                self.ib.cancel_market_data(ticker.contract)
+            except Exception as e:
+                self.logger.error(f"Error canceling market data for {symbol}: {e}")
 
         # Close database
         if self.db:
