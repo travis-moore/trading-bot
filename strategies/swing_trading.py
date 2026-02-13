@@ -294,7 +294,18 @@ class SwingTradingStrategy(BaseStrategy):
         context = context or {}
         symbol = context.get('symbol', 'UNKNOWN')
         
+        # --- 1. Check Market Regime (Optimization & Logging) ---
+        regime = context.get('market_regime')
+        if regime:
+            allowed_regimes = self.get_config('allowed_regimes', symbol=symbol)
+            if allowed_regimes and regime.value not in allowed_regimes:
+                instance_name = self.get_config('instance_name', self.name, symbol=symbol)
+                logger.info(f"{instance_name} ({symbol}): Skipping - Regime {regime.value} not in {allowed_regimes}")
+                return None
+
         if ticker is None:
+            instance_name = self.get_config('instance_name', self.name, symbol=symbol)
+            logger.info(f"{instance_name} ({symbol}): Skipping - No market depth data available")
             return None
             
         now = ticker.time if ticker.time else datetime.now()
