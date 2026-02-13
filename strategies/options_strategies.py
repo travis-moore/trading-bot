@@ -12,16 +12,26 @@ from market_context import MarketRegime
 
 logger = logging.getLogger(__name__)
 
+
 class BullPutSpreadStrategy(SwingTradingStrategy):
     """
     Bull Put Spread (Credit Spread).
     Entry: Price rejects Support (Power Level/Zone) AND Bull Trend.
-    Logic: Sell 30-Delta Put, Buy 15-Delta Put.
+    Logic: Sell short_put_delta Put, Buy long_put_delta Put.
     Exit: 50% Max Profit.
     """
     @property
     def name(self) -> str:
         return "bull_put_spread"
+
+    def get_default_config(self) -> Dict[str, Any]:
+        config = super().get_default_config()
+        config.update({
+            'short_put_delta': 30,      # Delta of the put to sell
+            'long_put_delta': 15,       # Delta of the put to buy (protection)
+            'exit_at_pct_profit': 0.50, # Close at 50% of max credit received
+        })
+        return config
 
     def analyze(self, ticker: Any, current_price: float, context: Optional[Dict[str, Any]] = None) -> Optional[StrategySignal]:
         # 1. Check Market Regime
@@ -34,8 +44,13 @@ class BullPutSpreadStrategy(SwingTradingStrategy):
 
         # 2. Use Swing Strategy logic to detect Support Rejection
         signal = super().analyze(ticker, current_price, context)
-        
+
         if signal and signal.direction == TradeDirection.LONG_CALL: # Rejection at Support maps to Long Call in Swing
+            symbol = context.get('symbol')
+            short_delta = self.get_config('short_put_delta', 30, symbol=symbol)
+            long_delta = self.get_config('long_put_delta', 15, symbol=symbol)
+            exit_pct = self.get_config('exit_at_pct_profit', 0.50, symbol=symbol)
+
             # Convert to Bull Put Spread Signal
             return StrategySignal(
                 direction=TradeDirection.BULL_PUT_SPREAD,
@@ -44,8 +59,8 @@ class BullPutSpreadStrategy(SwingTradingStrategy):
                 price_level=signal.price_level,
                 metadata={
                     **signal.metadata,
-                    'legs': {'short_delta': 30, 'long_delta': 15, 'type': 'put'},
-                    'exit_rule': '50_pct_profit'
+                    'legs': {'short_delta': short_delta, 'long_delta': long_delta, 'type': 'put'},
+                    'exit_rule': f'{int(exit_pct * 100)}_pct_profit'
                 }
             )
         return None
@@ -69,11 +84,19 @@ class BearPutSpreadStrategy(SwingTradingStrategy):
     """
     Bear Put Spread (Debit Spread).
     Entry: Support Imbalance Breakthrough (Breakout Down) AND Bear Trend.
-    Logic: Buy 50-Delta Put, Sell 30-Delta Put.
+    Logic: Buy long_put_delta Put, Sell short_put_delta Put.
     """
     @property
     def name(self) -> str:
         return "bear_put_spread"
+
+    def get_default_config(self) -> Dict[str, Any]:
+        config = super().get_default_config()
+        config.update({
+            'long_put_delta': 50,       # Delta of the put to buy (near ATM)
+            'short_put_delta': 30,      # Delta of the put to sell (further OTM)
+        })
+        return config
 
     def analyze(self, ticker: Any, current_price: float, context: Optional[Dict[str, Any]] = None) -> Optional[StrategySignal]:
         # 1. Check Market Regime
@@ -86,10 +109,14 @@ class BearPutSpreadStrategy(SwingTradingStrategy):
 
         # 2. Detect Breakout Down (Absorption/Breakout)
         signal = super().analyze(ticker, current_price, context)
-        
+
         # Swing strategy maps Breakout Down to LONG_PUT
         if signal and signal.direction == TradeDirection.LONG_PUT:
             if "breakout" in signal.pattern_name or "absorption" in signal.pattern_name:
+                symbol = context.get('symbol')
+                long_delta = self.get_config('long_put_delta', 50, symbol=symbol)
+                short_delta = self.get_config('short_put_delta', 30, symbol=symbol)
+
                 return StrategySignal(
                     direction=TradeDirection.BEAR_PUT_SPREAD,
                     confidence=signal.confidence,
@@ -97,27 +124,35 @@ class BearPutSpreadStrategy(SwingTradingStrategy):
                     price_level=signal.price_level,
                     metadata={
                         **signal.metadata,
-                        'legs': {'long_delta': 50, 'short_delta': 30, 'type': 'put'}
+                        'legs': {'long_delta': long_delta, 'short_delta': short_delta, 'type': 'put'}
                     }
                 )
         return None
 
     @classmethod
     def get_test_scenarios(cls) -> list:
-        # Note: This relies on SwingStrategy detecting a breakout down (LONG_PUT).
-        # Currently simulate_breakout generates an UP breakout. 
-        # We skip defining a scenario here until we have a simulate_breakout_down generator.
         return []
 
 class LongPutStrategy(SwingTradingStrategy):
     """
     Long Put.
     Entry: High-confidence Support Breakthrough AND (Bear Trend OR High Chaos).
-    Logic: Buy 50-Delta Put (ATM).
+    Logic: Buy put_delta Put (ATM).
     """
+    RECOMMENDED_MIN_CONFIDENCE = 0.75
+    _confidence_warning_logged_today = None  # Track daily warning
+
     @property
     def name(self) -> str:
         return "long_put"
+
+    def get_default_config(self) -> Dict[str, Any]:
+        config = super().get_default_config()
+        config.update({
+            'put_delta': 50,                        # Delta of the put to buy
+            'absorption_confidence': 0.75,          # Min confidence for entry
+        })
+        return config
 
     def analyze(self, ticker: Any, current_price: float, context: Optional[Dict[str, Any]] = None) -> Optional[StrategySignal]:
         # 1. Check Market Regime
@@ -128,13 +163,27 @@ class LongPutStrategy(SwingTradingStrategy):
             logger.info(f"{instance_name} ({context.get('symbol')}): Skipping - Regime {regime.value} not in [bear_trend, high_chaos]")
             return None
 
+        # Warn if confidence is below recommended minimum (once per day)
+        from datetime import date
+        today = date.today()
+        min_conf = self.get_config('absorption_confidence', 0.75)
+        if min_conf < self.RECOMMENDED_MIN_CONFIDENCE and self._confidence_warning_logged_today != today:
+            logger.warning(
+                f"LongPutStrategy: absorption_confidence ({min_conf}) is below "
+                f"recommended minimum ({self.RECOMMENDED_MIN_CONFIDENCE}). "
+                f"Low confidence entries increase risk of false breakout signals."
+            )
+            LongPutStrategy._confidence_warning_logged_today = today
+
         # 2. Detect Breakout Down
         signal = super().analyze(ticker, current_price, context)
-        
+
         if signal and signal.direction == TradeDirection.LONG_PUT:
             if "breakout" in signal.pattern_name or "absorption" in signal.pattern_name:
-                # Require high confidence
-                if signal.confidence > 0.75:
+                if signal.confidence >= min_conf:
+                    symbol = context.get('symbol')
+                    put_delta = self.get_config('put_delta', 50, symbol=symbol)
+
                     return StrategySignal(
                         direction=TradeDirection.LONG_PUT_STRAIGHT,
                         confidence=signal.confidence,
@@ -142,11 +191,11 @@ class LongPutStrategy(SwingTradingStrategy):
                         price_level=signal.price_level,
                         metadata={
                             **signal.metadata,
-                            'legs': {'long_delta': 50, 'type': 'put'}
+                            'legs': {'long_delta': put_delta, 'type': 'put'}
                         }
                     )
         return None
-    
+
     @classmethod
     def get_test_scenarios(cls) -> list:
         return []
@@ -155,12 +204,25 @@ class IronCondorStrategy(SwingTradingStrategy):
     """
     Iron Condor.
     Entry: Market Regime is Range Bound.
-    Logic: Sell 15-Delta Put/Call, Buy 5-Delta wings.
-    Exit: 50% profit or 21 DTE.
+    Logic: Sell short deltas, Buy wing deltas.
+    Exit: Configurable % profit or DTE threshold.
     """
     @property
     def name(self) -> str:
         return "iron_condor"
+
+    def get_default_config(self) -> Dict[str, Any]:
+        config = super().get_default_config()
+        config.update({
+            'short_put_delta': 15,      # Delta of the put to sell
+            'long_put_delta': 5,        # Delta of the put to buy (wing)
+            'short_call_delta': 15,     # Delta of the call to sell
+            'long_call_delta': 5,       # Delta of the call to buy (wing)
+            'exit_at_pct_profit': 0.50, # Close at 50% of max credit received
+            'exit_at_dte': 21,          # Close when 21 DTE remaining
+            'min_confidence': 0.80,     # Higher confidence for IC
+        })
+        return config
 
     def analyze(self, ticker: Any, current_price: float, context: Optional[Dict[str, Any]] = None) -> Optional[StrategySignal]:
         # 1. Check Market Regime
@@ -171,46 +233,43 @@ class IronCondorStrategy(SwingTradingStrategy):
             logger.info(f"{instance_name} ({context.get('symbol')}): Skipping - Regime {regime.value} != {MarketRegime.RANGE_BOUND.value}")
             return None
 
-        # 2. Check for Consolidation (Lack of directional signal)
-        # We can use the absence of strong directional signals from Swing strategy
-        # or check if price is between support and resistance
-        
-        # Get analysis from parent
+        # 2. Get analysis from parent
         analysis = self.get_analysis(ticker, current_price, context.get('symbol'))
-        
+
         # Check if price is roughly in middle of nearest zones
-        # This is a simplification; real IC logic might check IV Rank etc.
-        # For this template, we rely primarily on Regime + Consolidation
-        
-        # If Swing Strategy finds NO pattern, it returns None.
-        # But we want to trade when there is NO breakout/rejection (Range Bound).
-        
-        # Let's check if we are NOT near any major level
         nearest_support = analysis['confirmed_support'][0]['price'] if analysis['confirmed_support'] else 0
         nearest_resistance = analysis['confirmed_resistance'][0]['price'] if analysis['confirmed_resistance'] else float('inf')
-        
+
         if nearest_support > 0 and nearest_resistance < float('inf'):
             midpoint = (nearest_support + nearest_resistance) / 2
             range_width = nearest_resistance - nearest_support
-            
+
             # If price is in the middle 50% of the range
             dist_to_mid = abs(current_price - midpoint)
             if dist_to_mid < (range_width * 0.25):
+                symbol = context.get('symbol')
+                sp_delta = self.get_config('short_put_delta', 15, symbol=symbol)
+                lp_delta = self.get_config('long_put_delta', 5, symbol=symbol)
+                sc_delta = self.get_config('short_call_delta', 15, symbol=symbol)
+                lc_delta = self.get_config('long_call_delta', 5, symbol=symbol)
+                exit_pct = self.get_config('exit_at_pct_profit', 0.50, symbol=symbol)
+                exit_dte = self.get_config('exit_at_dte', 21, symbol=symbol)
+
                 return StrategySignal(
                     direction=TradeDirection.IRON_CONDOR,
-                    confidence=0.8, # High confidence if regime is Range Bound
+                    confidence=0.8,
                     pattern_name="range_consolidation",
                     metadata={
                         'legs': {
-                            'short_put_delta': 15,
-                            'long_put_delta': 5,
-                            'short_call_delta': 15,
-                            'long_call_delta': 5
+                            'short_put_delta': sp_delta,
+                            'long_put_delta': lp_delta,
+                            'short_call_delta': sc_delta,
+                            'long_call_delta': lc_delta
                         },
-                        'exit_rule': '50_pct_profit_or_21_dte'
+                        'exit_rule': f'{int(exit_pct * 100)}_pct_profit_or_{exit_dte}_dte'
                     }
                 )
-        
+
         return None
 
     @classmethod
@@ -221,7 +280,7 @@ class IronCondorStrategy(SwingTradingStrategy):
                 "type": "single",
                 "setup": {
                     "method": "generate_ticker",
-                    "params": {"price": 100.0} # Balanced ticker = consolidation
+                    "params": {"price": 100.0}
                 },
                 "context": {"market_regime": MarketRegime.RANGE_BOUND},
                 "expected": {"direction": TradeDirection.IRON_CONDOR}

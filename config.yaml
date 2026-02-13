@@ -7,13 +7,6 @@ ib_connection:
   client_id: 1
   sequential_scanning: true  # Set to true if hitting market data limits (e.g. only 3 symbols working)
 
-# Trading symbols to monitor
-# symbols:
-#   - "NVDA"
-#   - "AAPL"
-#   - "TSLA"
-#   # Add more symbols as needed
-
 # Liquidity Analyzer Settings
 liquidity_analysis:
   liquidity_threshold: 500        # Lowered from 20000 to catch normal liquidity
@@ -68,12 +61,24 @@ notifications:
 
 # Market Regime Settings
 market_regime:
+  update_interval_minutes: 30     # Re-assess regime every N minutes (default 30)
   high_chaos_vix_threshold: 30.0  # VIX level that triggers High Chaos
   high_chaos_vix_change_pct: 0.20 # 20% spike in VIX
   high_chaos_spy_vol_pct: 0.02    # 2% daily realized volatility in SPY
   bull_trend_vix_threshold: 20.0  # Max VIX for Bull Trend
   range_bound_vix_min: 15.0       # Min VIX for Range Bound
   range_bound_vix_max: 25.0       # Max VIX for Range Bound
+
+# Sector Rotation Settings
+sector_rotation:
+  update_interval_minutes: 60     # Re-assess rotation every N minutes (default 60)
+  bar_size: '1 hour'              # Bar size for RS calculation
+  duration: '5 D'                 # Lookback duration for RS data
+  rs_window: 5                    # Number of recent bars for slope calculation
+  # Override symbol-to-sector mapping (bypasses IB industry lookup)
+  # symbol_sector_overrides:
+  #   NVDA: XLK
+  #   TSLA: XLY
 
 # Safety Features
 safety:
@@ -83,11 +88,27 @@ safety:
   emergency_stop: false          # Emergency stop all trading
 
 strategies:
-  # Multiple swing trading instances with different parameters
-  # Each strategy instance has its own:
-  #   - budget: Max capital for this strategy (committed on entry, released on exit)
-  #   - max_positions: Max concurrent positions for this strategy instance
-  # Losses increase drawdown, wins recover it up to budget cap
+  # Multiple strategy instances with different parameters.
+  # Each strategy instance has its own budget, position limits, and config.
+  #
+  # --- Engine-Level Overrides (available on ANY strategy) ---
+  # These override the global defaults from risk_management / option_selection:
+  #   entry_price_bias: 0.0       # -1 = BID, 0 = MID (default), 1 = ASK
+  #   contract_cost_basis: 150.0  # Max $ per contract (entry_price * 100); skip if exceeded
+  #   min_dte: 14                 # Min days to expiration (overrides option_selection)
+  #   max_dte: 45                 # Max days to expiration (overrides option_selection)
+  #   call_strike_pct: 1.02       # Call strike as % of current price (1.02 = 2% OTM)
+  #   put_strike_pct: 0.98        # Put strike as % of current price (0.98 = 2% OTM)
+  #   profit_target_pct: 0.50     # Take profit at +50%
+  #   stop_loss_pct: 0.30         # Stop loss at -30%
+  #   max_hold_days: 30           # Auto-close after N days
+  #
+  # All of the above also support per-symbol overrides via symbol_overrides:
+  #   symbol_overrides:
+  #     TSLA:
+  #       entry_price_bias: -0.3  # Lean toward bid for TSLA
+  #       stop_loss_pct: 0.25     # Wider stop for TSLA
+  #
   swing_conservative:
     type: swing_trading
     enabled: true
@@ -101,6 +122,16 @@ strategies:
     zscore_threshold: 3.5           # Stricter level filtering
     allowed_regimes: ["bull_trend", "range_bound"] # Only trade in favorable regimes
     min_sector_rs: 0.0              # Only trade if sector is outperforming SPY (positive slope)
+    # Engine overrides (optional — uncomment to override globals)
+    # min_dte: 14                    # Override option_selection.min_dte
+    # max_dte: 45                    # Override option_selection.max_dte
+    # call_strike_pct: 1.02          # Override option_selection.call_strike_pct
+    # put_strike_pct: 0.98           # Override option_selection.put_strike_pct
+    # profit_target_pct: 0.50        # Override risk_management.profit_target_pct
+    # stop_loss_pct: 0.30            # Override risk_management.stop_loss_pct
+    # max_hold_days: 30              # Override risk_management.max_hold_days
+    # entry_price_bias: 0.0          # -1=BID, 0=MID, 1=ASK
+    # contract_cost_basis: 500.0     # Skip options > $500/contract
     # Historical Bounce Detection
     historical_bounce_enabled: true
     historical_lookback_days: 30    # Days of historical data
@@ -118,6 +149,8 @@ strategies:
     symbol_overrides:
       NVDA:
         zone_proximity_pct: 0.008   # Wider zones for NVDA due to volatility
+        # entry_price_bias: -0.3    # Lean toward bid for NVDA
+        # stop_loss_pct: 0.35       # Wider stop for NVDA volatility
     performance_feedback_enabled: true
     performance_lookback_days: 14   # Days to consider for win rate/P&L
     min_trades_for_feedback: 5      # Min trades before adjusting confidence
@@ -163,6 +196,11 @@ strategies:
     imbalance_entry_threshold: 0.7
     max_ticks_without_progress: 3   # Quick exit
     allowed_regimes: ["bull_trend", "bear_trend", "range_bound", "high_chaos"]
+    # Engine overrides for scalping
+    max_hold_days: 5                # Scalps shouldn't be held 30 days
+    entry_price_bias: 0.0           # Mid-price (default)
+    # profit_target_pct: 0.50       # Use global default
+    # stop_loss_pct: 0.30           # Use global default
     # Performance Feedback
     performance_feedback_enabled: true
     performance_lookback_days: 7    # Shorter window for scalping
@@ -177,6 +215,7 @@ strategies:
     max_positions: 1                # Scalping = one position at a time
     imbalance_entry_threshold: 0.8  # Higher threshold
     max_ticks_without_progress: 7   # More patience
+    max_hold_days: 5                # Scalps shouldn't be held 30 days
     allowed_regimes: ["bull_trend", "bear_trend", "range_bound"]
     # Performance Feedback
     performance_feedback_enabled: true
@@ -192,9 +231,14 @@ strategies:
     symbols: ["XSP", "QQQ"]
     budget: 2000
     orb_minutes: 15
+    trading_window_minutes: 30      # Minutes after ORB ends to accept signals (9:45-10:15)
     target_profit: 300.0
-    contract_cost_basis: 150.0
+    contract_cost_basis: 150.0      # Skip options costing more than $150/contract
+    max_hold_days: 1                # ORB is intraday
+    entry_price_bias: 0.0           # Mid-price (default)
     vix_symbol: 'VIX'
+    vix_slope_minutes: 5            # Minutes of VIX history for slope
+    spread_threshold_pct: 0.05      # Skip if spread > 5%
     allowed_regimes: ["bull_trend", "bear_trend", "high_chaos"]
 
   # Options / Spread Strategies
@@ -205,7 +249,10 @@ strategies:
     budget: 2000
     max_positions: 2
     zone_proximity_pct: 0.005
-    rejection_support_confidence: 0.70 # Specific param for Bull Put (Support Rejection)
+    rejection_support_confidence: 0.70 # Min confidence for support rejection
+    short_put_delta: 30               # Delta of put to sell
+    long_put_delta: 15                # Delta of put to buy (protection)
+    exit_at_pct_profit: 0.50          # Close at 50% of max credit
     allowed_regimes: ["bull_trend", "range_bound"]
 
   bear_put_spread_1:
@@ -215,7 +262,9 @@ strategies:
     budget: 2000
     max_positions: 2
     zone_proximity_pct: 0.005
-    absorption_confidence: 0.70     # Specific param for Bear Put (Breakout Down)
+    absorption_confidence: 0.70     # Min confidence for breakout down
+    long_put_delta: 50              # Delta of put to buy (near ATM)
+    short_put_delta: 30             # Delta of put to sell (further OTM)
     allowed_regimes: ["bear_trend"]
 
   long_put_1:
@@ -225,7 +274,8 @@ strategies:
     budget: 1500
     max_positions: 2
     zone_proximity_pct: 0.005
-    absorption_confidence: 0.75     # Specific param for Long Put (Breakout Down)
+    absorption_confidence: 0.75     # Min confidence (warns if set below 0.75)
+    put_delta: 50                   # Delta of the put to buy (ATM)
     allowed_regimes: ["bear_trend", "high_chaos"]
 
   iron_condor_1:
@@ -236,4 +286,10 @@ strategies:
     max_positions: 2
     zone_proximity_pct: 0.005
     min_confidence: 0.80
+    short_put_delta: 15             # Delta of put to sell
+    long_put_delta: 5               # Delta of put to buy (wing)
+    short_call_delta: 15            # Delta of call to sell
+    long_call_delta: 5              # Delta of call to buy (wing)
+    exit_at_pct_profit: 0.50        # Close at 50% of max credit
+    exit_at_dte: 21                 # Close when 21 DTE remaining
     allowed_regimes: ["range_bound"]

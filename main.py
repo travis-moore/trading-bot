@@ -260,7 +260,7 @@ class SwingTradingBot:
             
             # Initialize Market Context
             self.market_regime = MarketRegimeDetector(self.ib, self.config.get('market_regime'))
-            self.sector_manager = SectorRotationManager(self.ib)
+            self.sector_manager = SectorRotationManager(self.ib, self.config.get('sector_rotation'))
 
             # Initialize strategy manager if available
             if STRATEGIES_AVAILABLE and StrategyManager is not None:
@@ -586,12 +586,18 @@ class SwingTradingBot:
         # Simple check: run regime at open/mid-day, sector every hour
         # For simplicity in this loop, we rely on the managers to check time or we check here
         now = datetime.now()
-        # Re-assess regime if needed (e.g. if last update was long ago)
-        # Real implementation would check specific times (9:30, 13:30)
-        
-        # Re-assess sectors every 60 mins
-        if self.sector_manager.last_update is None or (now - self.sector_manager.last_update).total_seconds() > 3600:
-            self.sector_manager.assess_rotation()
+
+        # Re-assess regime periodically (default every 30 min)
+        if self.market_regime:
+            regime_interval = self.config.get('market_regime', {}).get('update_interval_minutes', 30)
+            if self.market_regime.last_update is None or (now - self.market_regime.last_update).total_seconds() > regime_interval * 60:
+                self.market_regime.assess_regime()
+
+        # Re-assess sectors periodically (default every 60 min)
+        if self.sector_manager:
+            sector_interval = self.config.get('sector_rotation', {}).get('update_interval_minutes', 60)
+            if self.sector_manager.last_update is None or (now - self.sector_manager.last_update).total_seconds() > sector_interval * 60:
+                self.sector_manager.assess_rotation()
 
         # Identify paused strategies (per-strategy daily loss limit)
         paused_strategies = set()

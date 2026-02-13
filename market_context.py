@@ -130,22 +130,30 @@ class SectorRotationManager:
     """
     Analyzes Sector Rotation using Relative Strength vs SPY.
     """
-    
+
     SECTORS = [
-        'XLK', 'XLE', 'XLF', 'XLV', 'XLI', 'XLP', 
+        'XLK', 'XLE', 'XLF', 'XLV', 'XLI', 'XLP',
         'XLY', 'XLB', 'XLU', 'XLRE', 'XLC'
     ]
-    
-    def __init__(self, ib: IBWrapper):
+
+    def __init__(self, ib: IBWrapper, config: Optional[Dict[str, Any]] = None):
         self.ib = ib
+        self.config = config or {}
         self.sector_rs = {s: 0.0 for s in self.SECTORS} # Slope of RS ratio
         self.symbol_sector_map = {} # Symbol -> Sector ETF
         self.last_update = None
 
+        # Apply symbol-sector overrides from config
+        overrides = self.config.get('symbol_sector_overrides', {})
+        self.symbol_sector_map.update(overrides)
+
     def map_symbol_to_sector(self, symbol: str, industry: str) -> str:
         """Map a stock symbol/industry to its sector ETF."""
+        # Check config overrides first
+        if symbol in self.symbol_sector_map:
+            return self.symbol_sector_map[symbol]
+
         # Simple mapping based on IB industry strings
-        # This is a simplified map; in production, use a comprehensive lookup
         mapping = {
             'Technology': 'XLK',
             'Energy': 'XLE',
@@ -169,54 +177,52 @@ class SectorRotationManager:
     def assess_rotation(self):
         """
         Calculate Relative Strength slope for all sectors.
-        Run every 60 mins.
         """
         try:
+            bar_size = self.config.get('bar_size', '1 hour')
+            duration = self.config.get('duration', '5 D')
+            rs_window = self.config.get('rs_window', 5)
+
             # Get SPY data
-            spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D')
+            spy_bars = self.ib.get_historical_bars('SPY', bar_size=bar_size, duration=duration)
             if not spy_bars:
-                # Fallback to RTH=False
-                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D', use_rth=False)
+                spy_bars = self.ib.get_historical_bars('SPY', bar_size=bar_size, duration=duration, use_rth=False)
             if not spy_bars:
-                # Fallback to MIDPOINT
-                spy_bars = self.ib.get_historical_bars('SPY', bar_size='1 hour', duration='5 D', what_to_show='MIDPOINT')
-            
+                spy_bars = self.ib.get_historical_bars('SPY', bar_size=bar_size, duration=duration, what_to_show='MIDPOINT')
+
             if not spy_bars:
                 return
-            
+
             spy_closes = {b.date: b.close for b in spy_bars} # Map by date/time for alignment
-            
+
             for sector in self.SECTORS:
-                sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D')
+                sec_bars = self.ib.get_historical_bars(sector, bar_size=bar_size, duration=duration)
                 if not sec_bars:
-                    # Fallback to RTH=False
-                    sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D', use_rth=False)
+                    sec_bars = self.ib.get_historical_bars(sector, bar_size=bar_size, duration=duration, use_rth=False)
                 if not sec_bars:
-                    # Fallback to MIDPOINT
-                    sec_bars = self.ib.get_historical_bars(sector, bar_size='1 hour', duration='5 D', what_to_show='MIDPOINT')
-                
+                    sec_bars = self.ib.get_historical_bars(sector, bar_size=bar_size, duration=duration, what_to_show='MIDPOINT')
+
                 if not sec_bars:
                     continue
-                
-                # Calculate RS Ratio for last 5 periods
+
+                # Calculate RS Ratio for last N periods
                 ratios = []
-                for bar in sec_bars[-5:]:
+                for bar in sec_bars[-rs_window:]:
                     if bar.date in spy_closes:
                         spy_price = spy_closes[bar.date]
                         if spy_price > 0:
                             ratios.append(bar.close / spy_price)
-                
+
                 if len(ratios) < 2:
                     continue
-                    
+
                 # Calculate Slope (Linear Regression approximation)
-                # Simple slope: (last - first) / steps
                 slope = (ratios[-1] - ratios[0]) / len(ratios)
                 self.sector_rs[sector] = slope
-                
+
             self.last_update = datetime.now()
             logger.info("Sector Rotation Updated")
-            
+
         except Exception as e:
             logger.error(f"Error assessing sector rotation: {e}")
 

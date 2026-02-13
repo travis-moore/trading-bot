@@ -58,8 +58,10 @@ class VIXMomentumORB(BaseStrategy):
         return {
             'enabled': False,
             'orb_minutes': 15,
+            'trading_window_minutes': 30,   # Minutes after ORB ends to accept signals (9:45-10:15 = 30)
             'target_profit': 300.0,
-            'contract_cost_basis': 150.0,
+            'contract_cost_basis': 150.0,   # Max option price to buy ($)
+            'max_hold_days': 1,             # ORB is intraday; close by end of day
             'vix_symbol': 'VIX',
             'spy_symbol': 'SPY', # For divergence check
             'spread_threshold_pct': 0.05, # 5% spread limit
@@ -144,7 +146,8 @@ class VIXMomentumORB(BaseStrategy):
         # 3. Define Time Windows
         market_open = datetime.combine(today, time(9, 30), tzinfo=now.tzinfo)
         orb_end = market_open + timedelta(minutes=orb_minutes)
-        trading_end = market_open + timedelta(minutes=45) # 10:15 AM
+        trading_window_minutes = self.get_config('trading_window_minutes', 30)
+        trading_end = orb_end + timedelta(minutes=trading_window_minutes)
 
         # 4. ORB Calculation Phase
         if current_price is None or current_price <= 0:

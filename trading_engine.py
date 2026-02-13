@@ -381,42 +381,63 @@ class TradingEngine:
 
         return max(1, contracts)
     
+    def _get_strategy_override(self, strategy_name: Optional[str], key: str, default,
+                               symbol: Optional[str] = None):
+        """
+        Get a config value with strategy-level override.
+
+        Checks the strategy's own config first (including per-symbol overrides),
+        then falls back to the engine's global config, then to the provided default.
+        """
+        if self.strategy_manager and strategy_name:
+            strategy = self.strategy_manager.get_strategy(strategy_name)
+            if strategy:
+                val = strategy.get_config(key, None, symbol=symbol)
+                if val is not None:
+                    return val
+        return self.config.get(key, default)
+
     def select_option(self, symbol: str, direction: TradeDirection,
-                     current_price: float) -> Optional[Contract]:
+                     current_price: float,
+                     strategy_name: Optional[str] = None) -> Optional[Contract]:
         """
         Select appropriate option contract based on direction
-        
+
         Args:
             symbol: Stock symbol
             direction: Trade direction
             current_price: Current stock price
-            
+            strategy_name: Optional strategy name for per-strategy config overrides
+
         Returns:
             Option contract or None
         """
-        # Get option chain
+        # Get option chain (allow per-strategy/per-symbol DTE overrides)
+        min_dte = self._get_strategy_override(strategy_name, 'min_dte', 7, symbol=symbol)
+        max_dte = self._get_strategy_override(strategy_name, 'max_dte', 45, symbol=symbol)
+
         chain, expiries = self.ib.get_option_chain(
             symbol,
-            expiry_days_min=self.config.get('min_dte', 7),
-            expiry_days_max=self.config.get('max_dte', 45)
+            expiry_days_min=min_dte,
+            expiry_days_max=max_dte
         )
-        
+
         if not chain or not expiries:
             logger.warning(f"No valid option expirations found for {symbol}")
             return None
-        
+
         # Select expiration (use first available)
         expiry = expiries[0]
-        
+
         # Determine strike and right
         # Fix: Compare by value to handle Enums from different modules (strategies vs engine)
         dir_value = direction.value if hasattr(direction, 'value') else str(direction)
-        
+
         if dir_value == TradeDirection.LONG_CALL.value:
-            strike_pct = self.config.get('call_strike_pct', 1.02)
+            strike_pct = self._get_strategy_override(strategy_name, 'call_strike_pct', 1.02, symbol=symbol)
             right = 'C'
         elif dir_value == TradeDirection.LONG_PUT.value:
-            strike_pct = self.config.get('put_strike_pct', 0.98)
+            strike_pct = self._get_strategy_override(strategy_name, 'put_strike_pct', 0.98, symbol=symbol)
             right = 'P'
         else:
             logger.error(f"Invalid trade direction for option selection: {direction} (value: {dir_value})")
@@ -530,8 +551,8 @@ class TradingEngine:
             logger.error(f"[{strategy_label}] Could not get current price for {symbol}")
             return False
 
-        # Select option
-        contract = self.select_option(symbol, direction, current_price)
+        # Select option (pass strategy_name for per-strategy DTE/strike overrides)
+        contract = self.select_option(symbol, direction, current_price, strategy_name)
         if contract is None:
             logger.error(f"[{strategy_label}] Could not select option contract for {symbol}")
             return False
@@ -544,7 +565,23 @@ class TradingEngine:
             return False
 
         bid, ask, last = price_data
-        raw_price = (bid + ask) / 2 if bid > 0 and ask > 0 else last
+
+        # Entry price bias: -1 = BID, 0 = MID (default), 1 = ASK
+        # Allows strategies to lean toward bid (cheaper fills) or ask (faster fills)
+        entry_price_bias = self._get_strategy_override(strategy_name, 'entry_price_bias', 0.0, symbol=symbol)
+        entry_price_bias = max(-1.0, min(1.0, float(entry_price_bias)))
+
+        if bid > 0 and ask > 0:
+            mid = (bid + ask) / 2
+            if entry_price_bias >= 0:
+                # Blend from mid toward ask
+                raw_price = mid + (ask - mid) * entry_price_bias
+            else:
+                # Blend from mid toward bid
+                raw_price = mid + (mid - bid) * entry_price_bias  # bias is negative, so this moves toward bid
+        else:
+            raw_price = last
+
         # Round to nearest $0.05 tick (standard option tick increment)
         # Ensure we don't round down to 0 for cheap options
         if raw_price > 0 and raw_price < 0.05:
@@ -556,13 +593,26 @@ class TradingEngine:
             logger.error(f"[{strategy_label}] Invalid option price for {contract.localSymbol}: ${entry_price} (Raw: ${raw_price})")
             return False
 
+        # Contract cost basis check: skip if option price exceeds max allowed
+        contract_cost_basis = self._get_strategy_override(strategy_name, 'contract_cost_basis', None, symbol=symbol)
+        if contract_cost_basis is not None:
+            contract_cost = entry_price * 100  # Per-contract cost
+            if contract_cost > float(contract_cost_basis):
+                logger.info(
+                    f"[{strategy_label}] Option too expensive for {contract.localSymbol}: "
+                    f"${contract_cost:.2f} > ${float(contract_cost_basis):.2f} max"
+                )
+                return False
+
         # Calculate position size (scaled by signal confidence)
         signal_confidence = getattr(signal, 'confidence', 1.0)
         quantity = self.calculate_position_size(entry_price, confidence=signal_confidence)
 
-        # Calculate exit levels (round to $0.05 tick)
-        raw_profit_target = entry_price * (1 + self.profit_target_pct)
-        raw_stop_loss = entry_price * (1 - self.stop_loss_pct)
+        # Calculate exit levels (per-strategy overrides, round to $0.05 tick)
+        profit_target_pct = self._get_strategy_override(strategy_name, 'profit_target_pct', self.profit_target_pct, symbol=symbol)
+        stop_loss_pct = self._get_strategy_override(strategy_name, 'stop_loss_pct', self.stop_loss_pct, symbol=symbol)
+        raw_profit_target = entry_price * (1 + profit_target_pct)
+        raw_stop_loss = entry_price * (1 - stop_loss_pct)
         profit_target = round(raw_profit_target * 20) / 20
         stop_loss = round(raw_stop_loss * 20) / 20
 
@@ -1108,13 +1158,14 @@ class TradingEngine:
                     if current_price >= effective_stop:
                         return True, f"Trailing stop hit (${current_price:.2f} >= ${effective_stop:.2f}, peak: ${position.peak_price:.2f})"
         
-        # Check time-based exit
+        # Check time-based exit (per-strategy override)
         now = datetime.now()
         if position.entry_time.tzinfo is not None:
             now = now.astimezone()
 
+        max_hold = self._get_strategy_override(position.strategy_name, 'max_hold_days', self.max_hold_days, symbol=position.contract.symbol)
         days_held = (now - position.entry_time).days
-        if days_held >= self.max_hold_days:
+        if days_held >= max_hold:
             return True, f"Max hold period reached ({days_held} days)"
         
         return False, ""
