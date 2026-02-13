@@ -109,6 +109,18 @@ class TradeDatabase:
 
             CREATE INDEX IF NOT EXISTS idx_hist_bars_symbol_time
             ON historical_bars(symbol, bar_size, timestamp);
+
+            -- Signal logging for Opportunity Utilization analysis
+            CREATE TABLE IF NOT EXISTS signal_logs (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol          TEXT NOT NULL,
+                strategy        TEXT NOT NULL,
+                pattern         TEXT NOT NULL,
+                confidence      REAL NOT NULL,
+                price           REAL NOT NULL,
+                outcome         TEXT NOT NULL, -- 'executed', 'rejected', 'failed_entry'
+                timestamp       TEXT NOT NULL DEFAULT (datetime('now'))
+            );
         """)
         self.conn.commit()
         self._migrate_add_strategy_column()
@@ -743,6 +755,21 @@ class TradeDatabase:
         return result
 
     # =========================================================================
+    # Signal Logging
+    # =========================================================================
+
+    def log_signal(self, symbol: str, strategy: str, pattern: str, confidence: float, price: float, outcome: str):
+        """Log a trading signal and its outcome for Opportunity Utilization analysis."""
+        try:
+            self.conn.execute("""
+                INSERT INTO signal_logs (symbol, strategy, pattern, confidence, price, outcome)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (symbol, strategy, pattern, confidence, price, outcome))
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to log signal: {e}")
+
+    # =========================================================================
     # Historical Bar Caching
     # =========================================================================
 
@@ -1022,6 +1049,157 @@ class TradeDatabase:
             params
         )
         return cursor.fetchone()['count']
+
+    def get_frequency_analysis(self, strategy: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Calculate trade frequency and opportunity metrics.
+        
+        Returns:
+            Dict containing:
+            - trades_per_day: Average trades per active trading day
+            - trades_per_hour: Average trades per hour (9-16)
+            - avg_inter_trade_interval_hours: Avg time between close of one and start of next
+            - opportunity_utilization_pct: Executed trades / Total signals
+        """
+        conditions = ["pnl IS NOT NULL"] # Only completed trades
+        params = []
+        if strategy:
+            conditions.append("strategy = ?")
+            params.append(strategy)
+        
+        where_clause = " AND ".join(conditions)
+
+        # 1. Trades Per Day
+        cursor = self.conn.execute(f"""
+            SELECT COUNT(*) as count, COUNT(DISTINCT DATE(entry_time)) as days
+            FROM trade_history WHERE {where_clause}
+        """, params)
+        row = cursor.fetchone()
+        total_trades = row['count']
+        total_days = row['days']
+        trades_per_day = total_trades / total_days if total_days > 0 else 0.0
+
+        # 2. Trades Per Hour (Distribution)
+        # SQLite strftime %H returns 00-23
+        cursor = self.conn.execute(f"""
+            SELECT strftime('%H', entry_time) as hour, COUNT(*) as count
+            FROM trade_history WHERE {where_clause}
+            GROUP BY hour ORDER BY hour
+        """, params)
+        hourly_counts = {row['hour']: row['count'] for row in cursor.fetchall()}
+        # Avg trades per hour (assuming 6.5 hour trading day)
+        trades_per_hour = total_trades / (total_days * 6.5) if total_days > 0 else 0.0
+
+        # 3. Inter-Trade Interval (Downtime)
+        # Sort by entry time to find gaps between trades
+        cursor = self.conn.execute(f"""
+            SELECT entry_time, exit_time 
+            FROM trade_history 
+            WHERE {where_clause} 
+            ORDER BY entry_time ASC
+        """, params)
+        trades = cursor.fetchall()
+        
+        intervals = []
+        if trades:
+            # Track when the "market" (bot) was last free
+            last_exit = datetime.fromisoformat(trades[0]['exit_time'])
+            
+            for i in range(1, len(trades)):
+                entry = datetime.fromisoformat(trades[i]['entry_time'])
+                exit_time = datetime.fromisoformat(trades[i]['exit_time'])
+                
+                if entry > last_exit:
+                    # Gap found
+                    delta = (entry - last_exit).total_seconds() / 3600.0
+                    # Filter out overnight gaps (e.g. > 12 hours) to focus on intraday gaps
+                    if delta < 12:
+                        intervals.append(delta)
+                
+                # Update last_exit to be the latest exit seen so far (handling overlaps)
+                if exit_time > last_exit:
+                    last_exit = exit_time
+
+        avg_interval = sum(intervals) / len(intervals) if intervals else 0.0
+
+        # 4. Opportunity Utilization
+        # Count total signals from signal_logs
+        sig_conditions = ["1=1"]
+        sig_params = []
+        if strategy:
+            sig_conditions.append("strategy = ?")
+            sig_params.append(strategy)
+            
+        cursor = self.conn.execute(f"""
+            SELECT COUNT(*) as count FROM signal_logs WHERE {" AND ".join(sig_conditions)}
+        """, sig_params)
+        total_signals = cursor.fetchone()['count']
+        
+        utilization = (total_trades / total_signals * 100) if total_signals > 0 else 0.0
+
+        return {
+            'trades_per_day': trades_per_day,
+            'trades_per_hour': trades_per_hour,
+            'avg_inter_trade_interval_hours': avg_interval,
+            'opportunity_utilization_pct': utilization,
+            'total_signals': total_signals,
+            'hourly_counts': hourly_counts  # Added for histogram
+        }
+
+    def get_frequency_vs_performance(self, strategy: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Analyze relationship between daily trade frequency and performance.
+        Helps find the 'sweet spot' (e.g., do I lose money when I trade > 5 times/day?).
+        """
+        # 1. Get all trades
+        trades = self.query_trades(strategy=strategy)
+        if not trades:
+            return []
+
+        # 2. Group trades by date
+        trades_by_date = {}
+        for trade in trades:
+            # Extract YYYY-MM-DD
+            date_str = trade['entry_time'][:10]
+            if date_str not in trades_by_date:
+                trades_by_date[date_str] = []
+            trades_by_date[date_str].append(trade)
+
+        # 3. Group by frequency (number of trades in a day)
+        # Map: frequency (int) -> list of all trades occurring on days with that frequency
+        freq_map = {}
+        # Also track how many days had this frequency
+        freq_days_count = {}
+
+        for date_str, day_trades in trades_by_date.items():
+            freq = len(day_trades)
+            if freq not in freq_map:
+                freq_map[freq] = []
+                freq_days_count[freq] = 0
+            freq_map[freq].extend(day_trades)
+            freq_days_count[freq] += 1
+
+        # 4. Calculate metrics for each frequency bucket
+        results = []
+        for freq, group_trades in freq_map.items():
+            total_trades = len(group_trades)
+            wins = sum(1 for t in group_trades if t['pnl'] is not None and t['pnl'] > 0)
+            total_pnl = sum(t['pnl'] for t in group_trades if t['pnl'] is not None)
+            
+            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+            avg_pnl = (total_pnl / total_trades) if total_trades > 0 else 0.0
+            
+            results.append({
+                'daily_frequency': freq,
+                'occurrences_days': freq_days_count[freq],
+                'total_trades_in_bucket': total_trades,
+                'win_rate': win_rate,
+                'avg_pnl': avg_pnl,
+                'total_pnl': total_pnl
+            })
+
+        # Sort by frequency (1 trade/day, 2 trades/day, etc.)
+        return sorted(results, key=lambda x: x['daily_frequency'])
 
     def get_performance_metrics(
         self,
@@ -1418,6 +1596,7 @@ class TradeDatabase:
             metrics = self.get_performance_metrics(
                 strategy=strategy, start_date=start_date, end_date=end_date
             )
+            freq = self.get_frequency_analysis(strategy=strategy)
 
             writer.writerow(['=== SUMMARY METRICS ==='])
             writer.writerow(['Metric', 'Value'])
@@ -1434,6 +1613,35 @@ class TradeDatabase:
             writer.writerow(['Largest Loser', f"${metrics['largest_loser']:.2f}"])
             writer.writerow(['Profit Factor', metrics['profit_factor']])
             writer.writerow(['Avg Hold Time (hours)', metrics['avg_hold_hours']])
+            writer.writerow([])
+            
+            writer.writerow(['=== TRADE FREQUENCY ANALYSIS ==='])
+            writer.writerow(['Trades Per Day', f"{freq['trades_per_day']:.1f}"])
+            writer.writerow(['Trades Per Hour (Avg)', f"{freq['trades_per_hour']:.2f}"])
+            writer.writerow(['Avg Inter-Trade Interval (Hours)', f"{freq['avg_inter_trade_interval_hours']:.2f}"])
+            writer.writerow(['Opportunity Utilization', f"{freq['opportunity_utilization_pct']:.1f}% ({metrics['total_trades']}/{freq['total_signals']} signals)"])
+            writer.writerow([])
+
+            # Hourly Distribution (Histogram Data)
+            writer.writerow(['=== HOURLY TRADE DISTRIBUTION (HISTOGRAM) ==='])
+            writer.writerow(['Hour', 'Trade Count', 'Visual'])
+            hourly = freq.get('hourly_counts', {})
+            # Sort by hour 00-23
+            for hour in sorted(hourly.keys()):
+                count = hourly[hour]
+                bar = '|' * count  # Simple ASCII bar
+                writer.writerow([f"{hour}:00", count, bar])
+            writer.writerow([])
+
+            # Frequency vs Performance (Sweet Spot Analysis)
+            writer.writerow(['=== FREQUENCY VS WIN RATE (SWEET SPOT) ==='])
+            writer.writerow(['Trades/Day', 'Days Observed', 'Win Rate %', 'Avg P&L', 'Total P&L'])
+            sweet_spot = self.get_frequency_vs_performance(strategy=strategy)
+            for row in sweet_spot:
+                writer.writerow([
+                    row['daily_frequency'], row['occurrences_days'], 
+                    f"{row['win_rate']:.1f}%", f"${row['avg_pnl']:.2f}", f"${row['total_pnl']:.2f}"
+                ])
             writer.writerow([])
 
             # Daily P&L

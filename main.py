@@ -728,13 +728,25 @@ class SwingTradingBot:
                         if 'symbol' not in signal.metadata:
                             signal.metadata['symbol'] = symbol
                         
-                        # Also check Sector RS Veto here if Engine doesn't have symbol
-                        # (Engine refactor added checks, but let's ensure symbol is passed)
-                        
                         direction = self.engine.evaluate_signal(signal)
+                        outcome = 'rejected'
 
                         if direction and direction != TradeDirection.NO_TRADE:
-                            self._handle_trade_signal(symbol, direction, signal, current_price)
+                            if self._handle_trade_signal(symbol, direction, signal, current_price):
+                                outcome = 'executed'
+                            else:
+                                outcome = 'failed_entry'
+                        
+                        # Log signal for Opportunity Utilization analysis
+                        if self.db:
+                            self.db.log_signal(
+                                symbol=symbol,
+                                strategy=strategy_name,
+                                pattern=signal.pattern_name,
+                                confidence=signal.confidence,
+                                price=current_price,
+                                outcome=outcome
+                            )
                 else:
                     # Legacy path: use analyzer directly
                     signal = self.analyzer.detect_pattern(ticker, current_price) if ticker else None
@@ -756,9 +768,23 @@ class SwingTradingBot:
 
                         # Evaluate if signal meets trading rules
                         direction = self.engine.evaluate_signal(signal)
+                        outcome = 'rejected'
 
                         if direction and direction != TradeDirection.NO_TRADE:
-                            self._handle_trade_signal(symbol, direction, signal, current_price)
+                            if self._handle_trade_signal(symbol, direction, signal, current_price):
+                                outcome = 'executed'
+                            else:
+                                outcome = 'failed_entry'
+                        
+                        if self.db:
+                            self.db.log_signal(
+                                symbol=symbol,
+                                strategy='legacy',
+                                pattern=signal.pattern.value,
+                                confidence=signal.confidence,
+                                price=current_price,
+                                outcome=outcome
+                            )
 
             except Exception as e:
                 self.logger.error(f"Error scanning {symbol}: {e}", exc_info=True)
@@ -831,15 +857,15 @@ class SwingTradingBot:
 
     def _handle_trade_signal(self, symbol: str, direction: TradeDirection,
                             signal, current_price: float):
-        """Handle a valid trade signal"""
+        """Handle a valid trade signal. Returns True if trade entered successfully."""
         # Check safety conditions
         if self.config['safety']['emergency_stop']:
             self.logger.warning("Emergency stop active, skipping trade")
-            return
+            return False
         
         if not self._is_market_hours():
             self.logger.info("Outside market hours, skipping trade")
-            return
+            return False
         
         # Check if manual approval required
         if self.config['safety']['require_manual_approval']:
@@ -849,7 +875,7 @@ class SwingTradingBot:
             approval = input("Approve trade? (yes/no): ").lower()
             if approval != 'yes':
                 self.logger.info("Trade not approved")
-                return
+                return False
         
         # Enter trade
         self.logger.info(f"Attempting to enter trade: {symbol} {direction.value}")
@@ -859,8 +885,10 @@ class SwingTradingBot:
         if success:
             self.stats['trades_entered'] += 1
             self.logger.info("Trade entered successfully")
+            return True
         else:
             self.logger.warning("Failed to enter trade")
+            return False
     
     def check_positions(self):
         """Check and manage open positions"""
