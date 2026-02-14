@@ -194,6 +194,19 @@ Shows:
 - Execution latency
 - Spread at time of trade
 
+### AI-Assisted Config Tuning
+
+Generate a data package for uploading to an AI chat to get configuration suggestions:
+
+```
+/package                # Auto-detect period (since last package, or 14 days)
+/package 7              # Last 7 days
+```
+
+Or standalone: `python ai_config_advisor.py --days 14`
+
+Output goes to `ai_packages/ai_package_YYYY-MM-DD.md`. After receiving AI suggestions, paste the response into Section 6 of the package file — it will be included in the next cycle's package for continuity.
+
 ### Export Data for External Analysis
 
 ```

@@ -55,6 +55,8 @@ These commands are typed into the terminal while the bot is running. They are pr
 | `/trades <SYMBOL> winners 50` | Combined filters with custom limit | Trade table |
 | `/export trades` | Export trade history to CSV file | File path |
 | `/export report` | Export full performance report to CSV | File path |
+| `/package` | Generate AI config advisor package (auto-detect period) | File path |
+| `/package <days>` | Generate AI config advisor package for last N days | File path |
 
 ### Notifications
 
@@ -132,6 +134,14 @@ daily = db.get_daily_pnl(start_date="2026-01-01")
 freq = db.get_frequency_analysis(strategy="swing_conservative")
 # Returns: trades_per_day, trades_per_hour, opportunity_utilization_pct
 
+# Exit reason distribution
+exit_reasons = db.get_exit_reason_distribution(start_date="2026-01-01")
+# Returns: [{exit_reason, count, total_pnl, avg_pnl, wins}]
+
+# Signal utilization by strategy
+signals = db.get_signal_utilization(start_date="2026-01-01")
+# Returns: [{strategy, total_signals, executed, rejected, failed_entry, utilization_pct}]
+
 # Export to CSV
 db.export_trades_to_csv("trades.csv", strategy="swing_conservative")
 db.export_performance_report("report.csv")
@@ -155,6 +165,27 @@ analyzer.analyze_trade_slippage("SWINGBOT-1738600000-1")
 analyzer.generate_global_report()
 ```
 
+### AIConfigAdvisor
+
+```python
+from ai_config_advisor import AIConfigAdvisor
+
+advisor = AIConfigAdvisor(
+    db_path="trading_bot.db",
+    config_path="config.yaml",
+    market_regime="bull_trend",  # or None for standalone
+)
+
+# Generate AI advisor package (auto-detect period from last package, or 14 days)
+filepath = advisor.generate_package()
+
+# Generate for a specific period
+filepath = advisor.generate_package(days=7)
+# Output: ai_packages/ai_package_2026-02-14.md
+```
+
+The generated package is a structured markdown file designed for uploading to an AI chat to get configuration tuning suggestions. It includes performance data, exit reason analysis, signal utilization, current config, a parameter reference, and instructions for the AI. See the **AI Config Advisor Workflow** section below.
+
 ### Command Line
 
 ```bash
@@ -166,7 +197,45 @@ python snapshot_analyzer.py SWINGBOT-1738600000-1
 
 # Generate execution quality report
 python snapshot_analyzer.py --report
+
+# Generate AI config advisor package
+python ai_config_advisor.py              # Auto-detect period
+python ai_config_advisor.py --days 7     # Last 7 days
+python ai_config_advisor.py --db path.db # Custom DB path
 ```
+
+---
+
+## AI Config Advisor Workflow
+
+The AI Config Advisor generates a structured data package designed for uploading to an AI chat (Claude, ChatGPT, etc.) to get configuration tuning suggestions.
+
+### Iterative Optimization Loop
+
+1. **Generate**: Run `/package` (or `python ai_config_advisor.py`)
+2. **Upload**: Paste the generated `.md` file into an AI chat
+3. **Review**: The AI provides ranked configuration suggestions with reasoning
+4. **Save**: Open the package file and paste the AI's response below the `---PASTE AI RESPONSE BELOW THIS LINE---` marker
+5. **Apply**: Make the suggested changes to `config.yaml`
+6. **Repeat**: Next period, run `/package` again — it automatically includes:
+   - Previous period's performance metrics
+   - The AI's suggestions you pasted
+   - A config diff showing what actually changed
+
+### Package Contents
+
+| Section | Contents |
+|---------|----------|
+| **1. System Context** | Bot description, tunable parameter reference with ranges, "do not change" list |
+| **2. Previous Cycle** | Last period's metrics, AI suggestions, config diff |
+| **3. Current Period Data** | Performance metrics, per-strategy/per-symbol breakdown, exit reasons, signal utilization, frequency analysis, budget status, worst/best trades, daily P&L |
+| **4. Current Configuration** | Filtered `config.yaml` (excludes secrets and infrastructure) |
+| **5. AI Instructions** | What format to use for suggestions, constraints, and context |
+| **6. AI Response** | Placeholder for pasting the AI's response (carried to next cycle) |
+
+### Output Location
+
+Packages are saved to `ai_packages/ai_package_YYYY-MM-DD.md`.
 
 ---
 

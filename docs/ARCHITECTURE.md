@@ -250,11 +250,13 @@ trading-bot/
   market_context.py           # Regime detection & sector rotation
   market_snapshot.py          # Snapshot data structures
   snapshot_analyzer.py        # Post-trade analysis CLI
+  ai_config_advisor.py        # AI config tuning package generator
   notifications.py            # Discord notifications
   requirements.txt            # Python dependencies
   trading_bot.db              # SQLite database (generated)
   trading_bot.log             # Log file (rotated daily)
   snapshots/                  # Market snapshot JSON files
+  ai_packages/                # AI advisor packages (generated)
   strategies/
     __init__.py               # Package exports
     base_strategy.py          # Abstract base class

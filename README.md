@@ -169,6 +169,7 @@ While running, the bot accepts these commands:
 | `/metrics [symbol]` | Show detailed performance metrics                  |
 | `/trades [filters]` | Query trade history (e.g., `/trades NVDA winners`) |
 | `/export [type]`    | Export to CSV (`trades` or `report`)               |
+| `/package [days]`   | Generate AI config advisor package                 |
 | `/quit` or `/stop`  | Stop the bot gracefully                            |
 
 ## Trading Logic
