@@ -41,6 +41,7 @@ from trading_engine import TradingEngine, TradeDirection, Position
 from trade_db import TradeDatabase
 from notifications import DiscordNotifier
 from market_context import MarketRegimeDetector, SectorRotationManager
+from ai_config_advisor import AIConfigAdvisor
 
 # Try to import strategies module
 try:
@@ -1039,6 +1040,11 @@ class SwingTradingBot:
         elif command.startswith('/export '):
             args = command.split(' ', 1)[1].strip()
             self._cmd_export(args)
+        elif command == '/package':
+            self._cmd_package()
+        elif command.startswith('/package '):
+            args = command.split(' ', 1)[1].strip()
+            self._cmd_package(args)
         elif command == '/test_notify':
             self._cmd_test_notify()
         elif command == '/quit' or command == '/stop':
@@ -1065,6 +1071,7 @@ Available commands:
   /metrics [symbol]  - Show detailed performance metrics
   /trades [filters]  - Query trade history (e.g., /trades NVDA winners)
   /export [type]     - Export trades to CSV (trades, report)
+  /package [days]    - Generate AI config advisor package
   /test_notify       - Send a test notification to Discord
   /quit or /stop     - Stop the bot gracefully
 """
@@ -1422,6 +1429,36 @@ Available commands:
             filepath = f"trades_{timestamp}.csv"
             count = self.db.export_trades_to_csv(filepath)
             print(f"\nExported {count} trades to: {filepath}\n")
+
+    def _cmd_package(self, args: str = ''):
+        """Generate AI configuration advisor package."""
+        if not self.db:
+            self.logger.warning("Database not available")
+            return
+
+        days = None
+        if args:
+            try:
+                days = int(args)
+            except ValueError:
+                print(f"Invalid days argument: {args}. Usage: /package [days]")
+                return
+
+        regime_str = None
+        if self.market_regime and self.market_regime.current_regime:
+            regime_str = self.market_regime.current_regime.value
+
+        try:
+            advisor = AIConfigAdvisor(
+                db_path=self.db.db_path,
+                config_path='config.yaml',
+                market_regime=regime_str,
+            )
+            filepath = advisor.generate_package(days=days)
+            print(f"\nAI Config Advisor package generated: {filepath}\n")
+        except Exception as e:
+            self.logger.error(f"Failed to generate package: {e}", exc_info=True)
+            print(f"Error generating package: {e}")
 
     def _cmd_test_notify(self):
         """Send a test notification to Discord."""

@@ -1482,6 +1482,98 @@ class TradeDatabase:
             for row in cursor.fetchall()
         ]
 
+    def get_exit_reason_distribution(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        strategy: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get trade count breakdown by exit_reason."""
+        conditions = ["pnl IS NOT NULL",
+                      "exit_reason NOT IN ('manual_close', 'reconciliation_not_found')"]
+        params = []
+
+        if start_date:
+            conditions.append("exit_time >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("exit_time <= ?")
+            params.append(end_date)
+        if strategy:
+            conditions.append("strategy = ?")
+            params.append(strategy)
+
+        where_clause = " AND ".join(conditions)
+
+        cursor = self.conn.execute(f"""
+            SELECT
+                exit_reason,
+                COUNT(*) as count,
+                SUM(pnl) as total_pnl,
+                AVG(pnl) as avg_pnl,
+                SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) as wins
+            FROM trade_history
+            WHERE {where_clause}
+            GROUP BY exit_reason
+            ORDER BY count DESC
+        """, params)
+
+        return [
+            {
+                'exit_reason': row['exit_reason'] or 'unknown',
+                'count': row['count'],
+                'total_pnl': round(row['total_pnl'] or 0, 2),
+                'avg_pnl': round(row['avg_pnl'] or 0, 2),
+                'wins': row['wins'] or 0,
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def get_signal_utilization(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Get signal outcome breakdown by strategy from signal_logs table."""
+        conditions = ["1=1"]
+        params = []
+
+        if start_date:
+            conditions.append("timestamp >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("timestamp <= ?")
+            params.append(end_date)
+
+        where_clause = " AND ".join(conditions)
+
+        cursor = self.conn.execute(f"""
+            SELECT
+                strategy,
+                COUNT(*) as total_signals,
+                SUM(CASE WHEN outcome = 'executed' THEN 1 ELSE 0 END) as executed,
+                SUM(CASE WHEN outcome = 'rejected' THEN 1 ELSE 0 END) as rejected,
+                SUM(CASE WHEN outcome = 'failed_entry' THEN 1 ELSE 0 END) as failed_entry
+            FROM signal_logs
+            WHERE {where_clause}
+            GROUP BY strategy
+            ORDER BY total_signals DESC
+        """, params)
+
+        return [
+            {
+                'strategy': row['strategy'],
+                'total_signals': row['total_signals'],
+                'executed': row['executed'] or 0,
+                'rejected': row['rejected'] or 0,
+                'failed_entry': row['failed_entry'] or 0,
+                'utilization_pct': round(
+                    (row['executed'] or 0) / row['total_signals'] * 100, 1
+                ) if row['total_signals'] > 0 else 0,
+            }
+            for row in cursor.fetchall()
+        ]
+
     # =========================================================================
     # CSV Export
     # =========================================================================
