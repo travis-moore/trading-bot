@@ -32,3 +32,5 @@ config_bk_2026-02-04.yaml
 .claude/settings.local.json
 trading_bot.db-shm
 trading_bot.db-wal
+
+nul
